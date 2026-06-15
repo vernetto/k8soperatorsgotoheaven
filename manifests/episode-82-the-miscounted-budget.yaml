@@ -1,0 +1,58 @@
+# Episode 82 — "The Miscounted Budget"
+# Culprit: PDB minAvailable equals replica count — rolling update can't proceed past halfway
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-82
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:1.24-alpine
+---
+# PDB: requires at least 4 pods available at all times
+# But deployment has 4 replicas — rolling update needs to terminate at least 1
+# → update stalls at 50% when 2 old + 2 new pods exist but only 2 old must stay
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-pdb
+  namespace: default
+  labels:
+    scenario: episode-82
+spec:
+  minAvailable: 4    # ← THE BUG: equals replica count — no disruption ever allowed
+  selector:
+    matchLabels:
+      app: api
+# REPRODUCE:
+#   kubectl apply -f episode-82-the-miscounted-budget.yaml
+#   # Wait for 4 pods to be Running, then trigger a rolling update:
+#   kubectl set image deployment/api api=nginx:1.25-alpine
+#   kubectl rollout status deployment/api   # stalls!
+#   kubectl get pods   # shows mix of old and new, never completes
+#
+# DIAGNOSE:
+#   kubectl get pdb api-pdb
+#   # DISRUPTIONS ALLOWED: 0
+#   kubectl describe pdb api-pdb
+#   # "Cannot evict pod as it would violate the pod's disruption budget"
+#
+# FIX: Use maxUnavailable or set minAvailable < replicas:
+#   spec:
+#     maxUnavailable: 1   # allow 1 pod to be terminated during update
+#   # OR:
+#     minAvailable: 3     # allow 1 of 4 to be unavailable

@@ -1,0 +1,48 @@
+# Episode 18 — "The Broken Ladder"
+# Culprit: Init container waits for a service that doesn't exist → pod stuck in Init:0/1
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-18
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      initContainers:
+      - name: wait-for-database
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Waiting for database service to be available..."
+            until nc -z database 5432; do
+              echo "database not ready, sleeping 5s..."
+              sleep 5
+            done
+            echo "Database is ready!"
+        # The 'database' Service does NOT exist in this manifest
+      containers:
+      - name: api
+        image: nginx:stable
+# EXPECTED: Pod stuck in Init:0/1 indefinitely
+# DIAGNOSE:
+#   kubectl get pod -l app=api        # shows Init:0/1
+#   kubectl describe pod <name>       # init container waiting
+#   kubectl logs <pod> -c wait-for-database   # "database not ready..."
+#   kubectl get service database      # not found!
+#
+# FIX: Create the missing service (and its backing deployment):
+#   kubectl create deployment database --image=postgres:15-alpine \
+#     --env=POSTGRES_PASSWORD=pass
+#   kubectl expose deployment database --port=5432

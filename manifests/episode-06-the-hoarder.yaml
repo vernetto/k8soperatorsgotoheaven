@@ -1,0 +1,44 @@
+# Episode 06 — "The Hoarder"
+# Culprit: Node disk pressure from ephemeral storage — pods get evicted
+
+---
+# A pod that writes a lot of data to ephemeral storage (simulating log accumulation)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: log-writer
+  namespace: default
+  labels:
+    scenario: episode-06
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: log-writer
+  template:
+    metadata:
+      labels:
+        app: log-writer
+    spec:
+      containers:
+      - name: writer
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Writing logs to ephemeral storage..."
+            while true; do
+              dd if=/dev/urandom bs=1M count=10 >> /tmp/growing.log 2>/dev/null
+              echo "Written $(du -sh /tmp/growing.log | cut -f1)"
+              sleep 2
+            done
+        resources:
+          requests:
+            ephemeral-storage: "100Mi"
+          limits:
+            ephemeral-storage: "200Mi"   # ← will be exceeded quickly
+# EXPECTED: Pod eventually gets evicted due to ephemeral-storage limit exceeded
+# DIAGNOSE:
+#   kubectl describe pod <name> | grep -A5 Reason
+#   kubectl get events | grep Evicted
+# FIX: Implement log rotation, mount a PVC for logs, or raise ephemeral-storage limit

@@ -1,0 +1,72 @@
+# Episode 45 — "The Webhook Trap"
+# Culprit: ValidatingWebhook with failurePolicy:Fail points to a dead service → ALL pod creates fail
+
+---
+# A webhook service that doesn't actually exist (or is broken)
+apiVersion: v1
+kind: Service
+metadata:
+  name: broken-validator
+  namespace: default
+  labels:
+    scenario: episode-45
+spec:
+  selector:
+    app: broken-validator   # ← no pods with this label exist
+  ports:
+  - port: 443
+    targetPort: 8443
+---
+# ValidatingWebhookConfiguration with failurePolicy: Fail
+# pointing to the broken service
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: episode-45-broken-webhook
+  labels:
+    scenario: episode-45
+webhooks:
+- name: validate.pods.episode45.example.com
+  failurePolicy: Fail   # ← if the webhook is unreachable, REJECT the request
+  sideEffects: None
+  admissionReviewVersions: ["v1"]
+  clientConfig:
+    service:
+      name: broken-validator
+      namespace: default
+      path: /validate
+    caBundle: ""   # empty — also causes TLS issues
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE"]
+    resources: ["pods"]
+  namespaceSelector:
+    matchLabels:
+      episode-45-test: "true"   # ← scoped to labeled namespaces only, for safety
+---
+# Test namespace with the label that triggers the webhook
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: webhook-test
+  labels:
+    scenario: episode-45
+    episode-45-test: "true"
+# EXPECTED: Any pod creation in namespace 'webhook-test' fails with:
+#   "Internal error occurred: failed calling webhook ... connection refused"
+#
+# REPRODUCE:
+#   kubectl run test-pod --image=nginx -n webhook-test   # fails immediately
+#
+# DIAGNOSE:
+#   kubectl get validatingwebhookconfigurations
+#   kubectl describe validatingwebhookconfigurations episode-45-broken-webhook
+#   kubectl get endpoints broken-validator   # shows <none>
+#
+# FIX option 1: Delete the broken webhook:
+#   kubectl delete validatingwebhookconfiguration episode-45-broken-webhook
+# FIX option 2: Change failurePolicy to Ignore (temporarily):
+#   kubectl patch validatingwebhookconfiguration episode-45-broken-webhook \
+#     --type=json -p='[{"op":"replace","path":"/webhooks/0/failurePolicy","value":"Ignore"}]'
+# FIX option 3: Fix the webhook service (deploy the actual webhook server)

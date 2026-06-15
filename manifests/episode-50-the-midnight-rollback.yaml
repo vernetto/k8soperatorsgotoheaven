@@ -1,0 +1,47 @@
+# Episode 50 — "The Midnight Rollback"
+# Culprit: revisionHistoryLimit: 0 — rollback history erased, can't undo a bad deploy
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-50
+spec:
+  replicas: 2
+  revisionHistoryLimit: 0   # ← THE BUG: no rollback history is kept
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:1.24-alpine
+# REPRODUCE:
+#   kubectl apply -f episode-50-the-midnight-rollback.yaml
+#   # Check rollout history — only 1 revision:
+#   kubectl rollout history deployment/api
+#
+#   # Deploy a "bad" new version:
+#   kubectl set image deployment/api api=nginx:1.25-alpine
+#   kubectl rollout history deployment/api   # still only 1 revision! (0 kept)
+#
+#   # Try to roll back:
+#   kubectl rollout undo deployment/api
+#   # Error: no rollout history found
+#   # OR it "rolls back" to the same image (no history to go back to)
+#
+# DIAGNOSE:
+#   kubectl describe deployment api | grep "Revision History"
+#   # Shows: Revision History Limit: 0
+#   kubectl get replicasets -l app=api   # only 1 ReplicaSet exists
+#
+# FIX: Never set revisionHistoryLimit to 0.
+#   A value of 3-10 is standard.
+#   kubectl patch deployment api -p '{"spec":{"revisionHistoryLimit":10}}'

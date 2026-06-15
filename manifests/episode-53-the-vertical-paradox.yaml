@@ -1,0 +1,83 @@
+# Episode 53 — "The Vertical Paradox"
+# Culprit: VPA and HPA both managing the same deployment — they fight each other
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-53
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:stable
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+---
+# HPA scaling on CPU utilization
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-hpa
+  namespace: default
+  labels:
+    scenario: episode-53
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+---
+# VPA (requires VPA CRD installed — see note below)
+# VPA in Auto mode changes resource requests → triggers pod restarts
+# HPA reacts to changed utilization % from different requests → changes replica count
+# They thrash against each other
+#
+# NOTE: VPA CRD is not in vanilla KIND. Install with:
+#   git clone https://github.com/kubernetes/autoscaler.git
+#   ./autoscaler/vertical-pod-autoscaler/hack/vpa-up.sh
+#
+# THEN apply this VPA object:
+#   apiVersion: autoscaling.k8s.io/v1
+#   kind: VerticalPodAutoscaler
+#   metadata:
+#     name: api-vpa
+#     namespace: default
+#   spec:
+#     targetRef:
+#       apiVersion: apps/v1
+#       kind: Deployment
+#       name: api
+#     updatePolicy:
+#       updateMode: "Auto"   # ← fights with HPA
+#
+# DIAGNOSE:
+#   kubectl get hpa api-hpa   # watch REPLICAS column fluctuate
+#   kubectl describe vpa api-vpa   # see recommended resources changing
+#
+# FIX: Set VPA to "Off" mode (recommendations only, no automatic changes):
+#   updatePolicy:
+#     updateMode: "Off"
+#   # Then use VPA recommendations to manually set right-sized requests for HPA to work with

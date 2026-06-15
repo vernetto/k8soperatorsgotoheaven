@@ -1,0 +1,63 @@
+# Episode 25 — "The Slow Drain"
+# Culprit: No preStop hook — LB sends traffic to pods that are already terminating
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-25
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+      - name: api
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+        # No preStop hook — Kubernetes removes the pod from endpoints
+        # and sends SIGTERM AT THE SAME TIME.
+        # The load balancer may still route traffic to the pod for a few seconds.
+        # This causes 502/connection errors during rolling updates.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-25
+spec:
+  selector:
+    app: api
+  ports:
+  - port: 80
+    targetPort: 80
+# REPRODUCE:
+#   # In one terminal, continuously curl the service:
+#   kubectl run -it --rm curl --image=curlimages/curl -- sh -c \
+#     "while true; do curl -s -o /dev/null -w '%{http_code}\n' http://api; done"
+#   # In another terminal, trigger a rolling update:
+#   kubectl set env deployment/api ROLLING="$(date)"
+#   # Observe 502 errors during the update
+#
+# FIX: Add a preStop hook to delay shutdown, giving the LB time to update:
+#   lifecycle:
+#     preStop:
+#       exec:
+#         command: ["/bin/sh", "-c", "sleep 15"]

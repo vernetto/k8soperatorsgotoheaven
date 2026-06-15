@@ -1,0 +1,52 @@
+# Episode 08 — "The Unclaimed Luggage"
+# Culprit: PVC references a StorageClass that doesn't exist → Pending forever
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data
+  namespace: default
+  labels:
+    scenario: episode-08
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd-premium   # ← this StorageClass does not exist in KIND
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stateful-app
+  namespace: default
+  labels:
+    scenario: episode-08
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stateful-app
+  template:
+    metadata:
+      labels:
+        app: stateful-app
+    spec:
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: app-data
+      containers:
+      - name: app
+        image: nginx:stable
+        volumeMounts:
+        - name: data
+          mountPath: /data
+# EXPECTED: PVC stays in Pending, Pod stays in Pending waiting for PVC
+# DIAGNOSE:
+#   kubectl get pvc app-data
+#   kubectl describe pvc app-data   # "no volume plugin matched"
+#   kubectl get storageclass
+# FIX: Change storageClassName to "standard" (the default in KIND)

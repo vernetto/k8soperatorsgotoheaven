@@ -1,0 +1,63 @@
+# Episode 35 — "The Misaligned Clock"
+# Culprit: Node clock drift — JWT tokens appear expired immediately after issue
+
+---
+# A pod that generates JWTs and another that validates them
+# With clock skew, the validating pod rejects "not yet valid" or "already expired" tokens
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: jwt-issuer
+  namespace: default
+  labels:
+    scenario: episode-35
+spec:
+  containers:
+  - name: issuer
+    image: busybox:1.36
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        while true; do
+          NOW=$(date +%s)
+          echo "Current time (issuer): $(date) [unix: $NOW]"
+          # Simulate issuing a JWT with current time as iat/nbf
+          echo "Issued token with iat=$NOW"
+          sleep 10
+        done
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: jwt-validator
+  namespace: default
+  labels:
+    scenario: episode-35
+spec:
+  containers:
+  - name: validator
+    image: busybox:1.36
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        while true; do
+          NOW=$(date +%s)
+          echo "Current time (validator): $(date) [unix: $NOW]"
+          # If validator's clock is behind by > 30s, "just issued" tokens appear from the future
+          sleep 10
+        done
+# SIMULATE CLOCK DRIFT (on the node):
+#   docker exec -it kind-worker date -s "2 minutes ago"  # skew the worker node clock
+#
+# DIAGNOSE:
+#   kubectl exec jwt-issuer -- date
+#   kubectl exec jwt-validator -- date
+#   # If they differ by more than a few seconds, that's the problem
+#
+#   # On a real node: timedatectl status | grep "NTP synchronized"
+#
+# FIX:
+#   # Restart the NTP daemon on the node
+#   # In a cloud environment, ensure the VM's time sync is enabled
+#   # In k8s: use chrony or ntpd as a DaemonSet to keep all nodes in sync

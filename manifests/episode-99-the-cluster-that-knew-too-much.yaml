@@ -1,0 +1,95 @@
+# Episode 99 — "The Cluster That Knew Too Much"
+# Culprit: Application uses hardcoded API server URL — breaks when cluster is migrated
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: broken-client-config
+  namespace: default
+  labels:
+    scenario: episode-99
+data:
+  # Hardcoded API server URL — breaks on cluster migration, rename, or IP change
+  kubernetes_api: "https://10.96.0.1:6443"  # ← HARDCODED old cluster IP
+  kubernetes_api_wrong: "https://old-cluster.internal.example.com:6443"  # ← HARDCODED hostname
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: correct-client-config
+  namespace: default
+  labels:
+    scenario: episode-99
+data:
+  # Correct: use the in-cluster service name (always works inside the cluster)
+  kubernetes_api: "https://kubernetes.default.svc.cluster.local"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-client-sa
+  namespace: default
+  labels:
+    scenario: episode-99
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: episode-99-client
+  labels:
+    scenario: episode-99
+subjects:
+- kind: ServiceAccount
+  name: k8s-client-sa
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+---
+# Pod using the WRONG (hardcoded) API server URL
+apiVersion: v1
+kind: Pod
+metadata:
+  name: broken-operator
+  namespace: default
+  labels:
+    scenario: episode-99
+    type: broken
+spec:
+  serviceAccountName: k8s-client-sa
+  containers:
+  - name: operator
+    image: bitnami/kubectl:latest
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "=== Broken operator: hardcoded API server URL ==="
+        HARDCODED_URL="https://10.1.2.3:6443"   # old cluster IP — now wrong!
+        echo "Trying hardcoded URL: $HARDCODED_URL"
+        curl -sk --max-time 5 $HARDCODED_URL/api/v1/namespaces \
+          -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+          && echo "Connected (unlikely)" || echo "FAILED: connection refused or timeout"
+        echo ""
+        echo "=== Correct operator: in-cluster config ==="
+        CORRECT_URL="https://kubernetes.default.svc.cluster.local"
+        echo "Trying in-cluster URL: $CORRECT_URL"
+        curl -sk --max-time 5 $CORRECT_URL/api/v1/namespaces \
+          --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+          -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+          | grep -o '"name":"[^"]*"' | head -5 && echo "Connected: OK"
+        sleep 3600
+# EXPECTED: hardcoded URL fails; in-cluster URL works
+#
+# DIAGNOSE:
+#   kubectl logs broken-operator   # shows "FAILED" for hardcoded, "OK" for in-cluster
+#   kubectl get configmap broken-client-config -o yaml   # shows the hardcoded URL
+#   grep -r "6443\|kubernetes.io" /etc/   # on the node — find hardcoded references
+#
+# FIX: Use in-cluster config in your application code:
+#   # Python: kubernetes.config.load_incluster_config()
+#   # Go:     rest.InClusterConfig()
+#   # Java:   Config.fromCluster()
+#   # All SDKs support in-cluster config — it reads the mounted ServiceAccount token
+#   # and uses https://kubernetes.default.svc.cluster.local automatically

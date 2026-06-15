@@ -1,0 +1,84 @@
+# Episode 74 — "The Audit Flood"
+# Culprit: Audit logging at maximum verbosity — fills control-plane disk rapidly
+
+---
+# An audit policy that logs EVERYTHING at RequestResponse level (the bug)
+# Save as /etc/kubernetes/audit-policy-bad.yaml on the control-plane node:
+#
+#   apiVersion: audit.k8s.io/v1
+#   kind: Policy
+#   rules:
+#   - level: RequestResponse   # ← logs request body AND response body for EVERY call
+#
+# vs. the correct policy:
+#
+#   apiVersion: audit.k8s.io/v1
+#   kind: Policy
+#   omitStages:
+#   - "RequestReceived"
+#   rules:
+#   - level: None              # don't log read-only API calls
+#     verbs: ["get", "list", "watch"]
+#   - level: None              # don't log health checks
+#     users: ["system:health"]
+#   - level: Metadata          # log metadata only for most things
+#     omitStages:
+#     - RequestReceived
+#   - level: RequestResponse   # full logging only for secrets and sensitive resources
+#     resources:
+#     - group: ""
+#       resources: ["secrets"]
+
+# A pod that generates lots of API calls (to trigger massive audit logs)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-poller
+  namespace: default
+  labels:
+    scenario: episode-74
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-poller
+  template:
+    metadata:
+      labels:
+        app: api-poller
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: poller
+        image: bitnami/kubectl:latest
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Generating audit log entries..."
+            while true; do
+              kubectl get pods > /dev/null 2>&1   # every call is logged at RequestResponse
+              kubectl get configmaps > /dev/null 2>&1
+              sleep 0.5
+            done
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: episode-74-poller
+  labels:
+    scenario: episode-74
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+# DIAGNOSE:
+#   docker exec kind-control-plane du -sh /var/log/kubernetes/   # growing fast
+#   docker exec kind-control-plane tail -n5 /var/log/kubernetes/kube-apiserver-audit.log
+#   # See massive log entries for every get/list call
+#
+# FIX: Apply a proper AuditPolicy that excludes read-only verbs and health checks
+#   See the commented example above

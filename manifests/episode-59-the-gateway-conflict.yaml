@@ -1,0 +1,89 @@
+# Episode 59 — "The Gateway Conflict"
+# Culprit: Both Ingress and Gateway API HTTPRoute defined for the same hostname — unpredictable routing
+
+---
+# Traditional Ingress resource
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-ingress
+  namespace: default
+  labels:
+    scenario: episode-59
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-v1
+            port:
+              number: 80
+---
+# Gateway API HTTPRoute for the SAME hostname (conflict!)
+# Requires Gateway API CRDs: kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api-httproute
+  namespace: default
+  labels:
+    scenario: episode-59
+spec:
+  parentRefs:
+  - name: main-gateway
+    namespace: default
+  hostnames:
+  - "api.example.com"   # ← SAME hostname as the Ingress above
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: api-v2
+      port: 80
+---
+# Backend services
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-v1
+  namespace: default
+  labels:
+    scenario: episode-59
+spec:
+  selector:
+    app: api-v1
+  ports:
+  - port: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-v2
+  namespace: default
+  labels:
+    scenario: episode-59
+spec:
+  selector:
+    app: api-v2
+  ports:
+  - port: 80
+# EXPECTED: Requests to api.example.com go to either v1 or v2 unpredictably
+#   depending on which controller processes the request first
+#
+# DIAGNOSE:
+#   kubectl get ingress api-ingress       # shows Ingress rules
+#   kubectl get httproute api-httproute   # shows HTTPRoute rules
+#   # Both claim api.example.com — conflict!
+#
+# FIX: Choose ONE routing method and remove the other.
+#   If migrating from Ingress to Gateway API:
+#   1. Verify HTTPRoute works correctly
+#   2. Delete the Ingress: kubectl delete ingress api-ingress

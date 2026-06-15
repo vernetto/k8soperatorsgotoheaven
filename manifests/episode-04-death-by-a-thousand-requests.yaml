@@ -1,0 +1,36 @@
+# Episode 04 — "Death by a Thousand Requests"
+# Culprit: Memory limit too low — OOM killer terminates the container (Exit 137)
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-hungry-app
+  namespace: default
+  labels:
+    scenario: episode-04
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: memory-hungry-app
+  template:
+    metadata:
+      labels:
+        app: memory-hungry-app
+    spec:
+      containers:
+      - name: app
+        image: polinux/stress:latest
+        command: ["stress"]
+        args: ["--vm", "1", "--vm-bytes", "150M", "--vm-hang", "1"]
+        resources:
+          requests:
+            memory: "64Mi"
+          limits:
+            memory: "80Mi"   # ← intentionally too low; app will use 150Mi → OOMKilled
+# EXPECTED: Pod gets OOMKilled repeatedly (exit code 137), CrashLoopBackOff
+# DIAGNOSE: kubectl describe pod <name> | grep -i oom
+#           kubectl get pod <name> -o jsonpath='{.status.containerStatuses[0].lastState}'
+# FIX: Raise the memory limit, e.g. limits.memory: "256Mi"
+#      And investigate actual app memory usage with: kubectl top pod

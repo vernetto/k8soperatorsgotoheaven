@@ -1,0 +1,55 @@
+# Episode 32 — "The Expired Token"
+# Culprit: imagePullSecret contains stale/expired registry credentials
+
+---
+# An imagePullSecret with WRONG/expired credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-credentials
+  namespace: default
+  labels:
+    scenario: episode-32
+type: kubernetes.io/dockerconfigjson
+data:
+  # This is a fake/invalid dockerconfig that simulates expired credentials
+  # Real expired creds would look the same but be rejected by the registry
+  .dockerconfigjson: eyJhdXRocyI6eyJteXJlZ2lzdHJ5LmV4YW1wbGUuY29tIjp7InVzZXJuYW1lIjoibXl1c2VyIiwicGFzc3dvcmQiOiJPTERfRVhQSVJFRF9QQVNTV09SRCIsImF1dGgiOiJiWGwxYzJWeU9rOU1SRjlGV0ZCSlVrVkVYMUJCVTFOWFQxSkUifX19
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: private-app
+  namespace: default
+  labels:
+    scenario: episode-32
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: private-app
+  template:
+    metadata:
+      labels:
+        app: private-app
+    spec:
+      imagePullSecrets:
+      - name: registry-credentials
+      containers:
+      - name: app
+        image: myregistry.example.com/myimage:latest  # private registry image
+# EXPECTED: ImagePullBackOff with "unauthorized: authentication required"
+#   or "403 Forbidden" from the registry
+#
+# DIAGNOSE:
+#   kubectl describe pod <name> | grep -A5 Events
+#   # "Failed to pull image ... unauthorized"
+#   kubectl get secret registry-credentials -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d
+#   # Check the credentials stored in the secret
+#
+# FIX: Re-create the secret with fresh credentials:
+#   kubectl delete secret registry-credentials
+#   kubectl create secret docker-registry registry-credentials \
+#     --docker-server=myregistry.example.com \
+#     --docker-username=myuser \
+#     --docker-password=NEW_VALID_PASSWORD

@@ -1,0 +1,64 @@
+# Episode 56 — "The Phantom Scraper"
+# Culprit: Prometheus scraping wrong port — metrics endpoint exists but not collected
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-app
+  namespace: default
+  labels:
+    scenario: episode-56
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metrics-app
+  template:
+    metadata:
+      labels:
+        app: metrics-app
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"    # ← WRONG PORT! App serves metrics on 8080
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+        ports:
+        - name: http
+          containerPort: 80
+        - name: metrics
+          containerPort: 8080   # ← actual metrics port
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics-app
+  namespace: default
+  labels:
+    scenario: episode-56
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"   # ← WRONG PORT in service annotation too
+spec:
+  selector:
+    app: metrics-app
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+# EXPECTED: Prometheus scrapes port 9090 which is not open → no metrics collected
+#
+# DIAGNOSE:
+#   # In Prometheus UI: check Targets page
+#   # Look for: "connection refused" or "no route to host" on port 9090
+#   kubectl describe pod -l app=metrics-app | grep -A5 Ports
+#   # Shows: 80/TCP, 8080/TCP — no 9090!
+#
+# FIX: Correct the port annotation to match the actual metrics port:
+#   prometheus.io/port: "8080"

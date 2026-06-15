@@ -1,0 +1,69 @@
+# Episode 46 — "The Hungry Etcd"
+# Culprit: etcd on slow disk — high write latency causes API server timeouts
+# (Infrastructure/node-level issue; this manifest sets up observable symptoms)
+
+---
+# A pod that hammers the Kubernetes API to expose etcd latency
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-hammer
+  namespace: default
+  labels:
+    scenario: episode-46
+spec:
+  serviceAccountName: default
+  containers:
+  - name: hammer
+    image: bitnami/kubectl:latest
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "Measuring API server latency (indicator of etcd health)..."
+        while true; do
+          START=$(date +%s%N)
+          kubectl get configmaps > /dev/null 2>&1
+          END=$(date +%s%N)
+          LATENCY=$(( (END - START) / 1000000 ))
+          echo "API call latency: ${LATENCY}ms"
+          if [ $LATENCY -gt 1000 ]; then
+            echo "WARNING: High latency detected (>1s) — possible etcd disk issue!"
+          fi
+          sleep 2
+        done
+---
+# Grant the pod permission to list configmaps
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: episode-46-api-hammer
+  labels:
+    scenario: episode-46
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+# NOTE: etcd disk issues cannot be reproduced inside KIND easily.
+# This manifest creates an observable latency measurement tool.
+#
+# SIMULATE slow etcd (advanced):
+#   docker exec -it kind-control-plane bash
+#   # Apply I/O throttling to the etcd process (Linux only):
+#   PID=$(pgrep etcd)
+#   ionice -c 3 -p $PID   # set etcd to idle I/O priority
+#
+# DIAGNOSE:
+#   # Check etcd metrics (if accessible):
+#   kubectl exec -n kube-system etcd-kind-control-plane -- \
+#     etcdctl endpoint status --write-out=table \
+#     --endpoints=https://127.0.0.1:2379 \
+#     --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+#     --cert=/etc/kubernetes/pki/etcd/server.crt \
+#     --key=/etc/kubernetes/pki/etcd/server.key
+#
+# FIX: Move etcd data directory to NVMe/SSD, or defragment etcd:
+#   etcdctl defrag --endpoints=https://127.0.0.1:2379 ...

@@ -1,0 +1,90 @@
+# Episode 20 — "The Quota Prison"
+# Culprit: ResourceQuota exhausted — no new pods can be created in namespace
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-blue
+  labels:
+    scenario: episode-20
+---
+# Very tight ResourceQuota
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-blue-quota
+  namespace: team-blue
+  labels:
+    scenario: episode-20
+spec:
+  hard:
+    requests.cpu: "500m"
+    requests.memory: "512Mi"
+    limits.cpu: "1"
+    limits.memory: "1Gi"
+    pods: "3"
+---
+# Existing workload that already uses most of the quota
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: existing-app
+  namespace: team-blue
+  labels:
+    scenario: episode-20
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: existing-app
+  template:
+    metadata:
+      labels:
+        app: existing-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "150Mi"
+          limits:
+            cpu: "300m"
+            memory: "300Mi"
+---
+# New deployment that will FAIL because quota is exhausted
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: new-service
+  namespace: team-blue
+  labels:
+    scenario: episode-20
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: new-service
+  template:
+    metadata:
+      labels:
+        app: new-service
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "100Mi"
+          limits:
+            cpu: "200m"
+            memory: "200Mi"
+# EXPECTED: new-service pods stay in Pending; ReplicaSet shows error:
+#   "exceeded quota: pods=3"
+# DIAGNOSE:
+#   kubectl describe quota -n team-blue
+#   kubectl get events -n team-blue | grep exceeded
+# FIX: Either raise the ResourceQuota or reduce existing workload replicas

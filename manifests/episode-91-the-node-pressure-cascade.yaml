@@ -1,0 +1,97 @@
+# Episode 91 — "The Node Pressure Cascade"
+# Culprit: BestEffort pod with no limits triggers memory pressure → cascade evictions
+
+---
+# The trigger: a BestEffort pod (no requests or limits) that grabs memory
+# BestEffort pods are the FIRST to be evicted under memory pressure
+apiVersion: v1
+kind: Pod
+metadata:
+  name: best-effort-memory-bomb
+  namespace: default
+  labels:
+    scenario: episode-91
+    qos: BestEffort
+spec:
+  containers:
+  - name: bomb
+    image: polinux/stress:latest
+    command: ["stress"]
+    args: ["--vm", "1", "--vm-bytes", "300M", "--vm-hang", "0"]
+    # No resources block = BestEffort QoS class
+---
+# Burstable pods — evicted second (after BestEffort)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: burstable-app
+  namespace: default
+  labels:
+    scenario: episode-91
+    qos: Burstable
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: burstable-app
+  template:
+    metadata:
+      labels:
+        app: burstable-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+        resources:
+          requests:
+            memory: "64Mi"
+          # No limits = Burstable QoS
+---
+# Guaranteed pods — evicted last (only under extreme pressure)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guaranteed-app
+  namespace: default
+  labels:
+    scenario: episode-91
+    qos: Guaranteed
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: guaranteed-app
+  template:
+    metadata:
+      labels:
+        app: guaranteed-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+        resources:
+          requests:
+            memory: "128Mi"
+          limits:
+            memory: "128Mi"   # requests == limits = Guaranteed QoS
+# EXPECTED: Under memory pressure, kubelet evicts in order:
+#   1. BestEffort pods first (best-effort-memory-bomb)
+#   2. Burstable pods next (burstable-app)
+#   3. Guaranteed pods last (guaranteed-app)
+#
+# REPRODUCE:
+#   # Watch QoS class assignments:
+#   kubectl get pods -o custom-columns=\
+#     NAME:.metadata.name,\
+#     QOS:.status.qosClass,\
+#     STATUS:.status.phase
+#
+# DIAGNOSE:
+#   kubectl describe node | grep -A10 "Conditions"   # look for MemoryPressure: True
+#   kubectl get events | grep Evicted
+#   kubectl describe pod best-effort-memory-bomb | grep "Reason: Evicted"
+#
+# FIX:
+#   1. Always set resource requests AND limits on all pods
+#   2. Use LimitRange to enforce minimum resource requirements
+#   3. Alert on MemoryPressure node condition before evictions cascade

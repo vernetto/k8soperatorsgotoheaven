@@ -1,0 +1,46 @@
+# Episode 21 — "The Missing Brain"
+# Culprit: kube-scheduler crashed — all new pods stuck in Pending forever
+
+---
+# Normal pod that would schedule fine if the scheduler were working
+apiVersion: v1
+kind: Pod
+metadata:
+  name: normal-pod
+  namespace: default
+  labels:
+    scenario: episode-21
+spec:
+  containers:
+  - name: app
+    image: nginx:stable
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+---
+# ─────────────────────────────────────────────────────────────────
+# To SIMULATE the missing scheduler (run AFTER applying this manifest):
+#
+# In KIND, the scheduler runs as a static pod on the control-plane node.
+# You can simulate the failure by scaling it to 0 replicas... but in KIND
+# with static pods you need to SSH into the node. Instead, simulate via:
+#
+#   # Patch the scheduler deployment (if using a non-static scheduler)
+#   kubectl scale deployment kube-scheduler -n kube-system --replicas=0
+#
+# OR: Simply delete the running pod (it will not be rescheduled while we observe):
+#   kubectl delete pod -n kube-system -l component=kube-scheduler
+#
+# REPRODUCE:
+#   kubectl delete pod normal-pod; kubectl apply -f episode-21-the-missing-brain.yaml
+#   kubectl get pod normal-pod   # will stay Pending with no events
+#
+# DIAGNOSE:
+#   kubectl get pods -n kube-system | grep scheduler
+#   kubectl describe pod normal-pod   # no scheduling events at all
+#
+# FIX:
+#   Restore the scheduler pod. In KIND (kubeadm):
+#   # Check /etc/kubernetes/manifests/kube-scheduler.yaml on the control-plane node
+#   docker exec -it kind-control-plane ls /etc/kubernetes/manifests/

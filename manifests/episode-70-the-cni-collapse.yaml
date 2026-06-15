@@ -1,0 +1,58 @@
+# Episode 70 — "The CNI Collapse"
+# Culprit: CNI DaemonSet pod crashes on one node — all pods on that node lose network
+
+---
+# A network connectivity checker DaemonSet — one pod per node
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: network-checker
+  namespace: default
+  labels:
+    scenario: episode-70
+spec:
+  selector:
+    matchLabels:
+      app: network-checker
+  template:
+    metadata:
+      labels:
+        app: network-checker
+    spec:
+      containers:
+      - name: checker
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            NODE=$(cat /etc/nodename 2>/dev/null || hostname)
+            echo "Network checker running on node: $NODE"
+            while true; do
+              # Test intra-cluster DNS
+              nslookup kubernetes.default.svc.cluster.local > /dev/null 2>&1 \
+                && echo "[$NODE] DNS: OK" \
+                || echo "[$NODE] DNS: FAILED"
+              sleep 10
+            done
+---
+# SIMULATE CNI agent crash:
+# (In KIND, Kindnet is the CNI agent)
+#   # Find the kindnet pod on a specific worker:
+#   kubectl get pods -n kube-system -l app=kindnet -o wide
+#
+#   # Delete the kindnet pod on kind-worker (it will be recreated, but briefly disrupts networking):
+#   kubectl delete pod -n kube-system \
+#     $(kubectl get pods -n kube-system -l app=kindnet -o wide | grep kind-worker | awk '{print $1}')
+#
+#   # Observe: pods on kind-worker briefly lose connectivity
+#   kubectl logs -l app=network-checker --prefix | grep FAILED
+#
+# For a longer disruption, use kubectl drain or taint the node
+#
+# DIAGNOSE:
+#   kubectl get pods -n kube-system -l app=kindnet -o wide   # check all CNI pods
+#   kubectl logs -n kube-system <kindnet-pod-on-affected-node>
+#   kubectl describe node <affected-node>   # check for NetworkUnavailable condition
+#
+# FIX: Restart the CNI DaemonSet pod on the affected node:
+#   kubectl rollout restart daemonset kindnet -n kube-system

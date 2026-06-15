@@ -1,0 +1,75 @@
+# Episode 77 — "The Sidecar Dependency"
+# Culprit: Main container starts before sidecar proxy is ready — app crashes in first seconds
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-77
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      # Sidecar proxy (simulating Istio Envoy / Linkerd)
+      - name: proxy-sidecar
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Proxy sidecar: starting up (takes 10 seconds)..."
+            sleep 10
+            echo "Proxy sidecar: READY — creating readiness file"
+            echo "ok" > /tmp/proxy-ready
+            sleep 3600
+        readinessProbe:
+          exec:
+            command: ["cat", "/tmp/proxy-ready"]
+          initialDelaySeconds: 2
+          periodSeconds: 2
+      # Main app container — starts at the same time as sidecar
+      # and immediately tries to use the proxy
+      - name: api
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "API: starting up, trying to connect via proxy..."
+            # Without retry, this fails if proxy is not yet ready
+            curl -s --max-time 3 http://localhost:15001/healthz \
+              && echo "Proxy connection: OK" \
+              || echo "Proxy connection: FAILED — proxy not ready yet!"
+            echo "API: attempting to initialize..."
+            # Simulate app crashing because proxy is not ready
+            # In real Istio, the app would fail to make outbound calls
+            echo "API: crash — cannot reach upstream services via proxy"
+            exit 1
+# EXPECTED: api container crashes during startup because proxy is not ready yet
+#   → CrashLoopBackOff
+#
+# DIAGNOSE:
+#   kubectl logs <pod> -c api             # shows "proxy connection FAILED"
+#   kubectl logs <pod> -c proxy-sidecar   # shows "starting up..."
+#
+# FIX option 1: Add a startup script that waits for the proxy:
+#   command: ["/bin/sh", "-c"]
+#   args:
+#     - |
+#       echo "Waiting for proxy..."
+#       until curl -s http://localhost:15001/healthz; do sleep 1; done
+#       echo "Proxy ready, starting app..."
+#       exec node server.js
+#
+# FIX option 2 (Kubernetes 1.29+): Use native sidecar containers:
+#   initContainers:
+#   - name: proxy-sidecar
+#     restartPolicy: Always   # ← native sidecar: starts before regular containers

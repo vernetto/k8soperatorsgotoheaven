@@ -1,0 +1,79 @@
+# Episode 36 — "The Runaway Train"
+# Culprit: Wrong kubectl context — command ran against production instead of staging
+# This is a human error / safety scenario. The manifest sets up a guard rail demo.
+
+---
+# Production namespace with critical data
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    scenario: episode-36
+    environment: production
+---
+# Staging namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    scenario: episode-36
+    environment: staging
+---
+# Critical production deployment (the one accidentally deleted in the episode)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: production
+  labels:
+    scenario: episode-36
+    environment: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:stable
+---
+# Safe staging deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: staging
+  labels:
+    scenario: episode-36
+    environment: staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:stable
+# REPRODUCE THE MISTAKE:
+#   # Accidentally delete production instead of staging:
+#   kubectl delete deployment api -n production   # ← OOPS
+#
+# PREVENTION (Inspector Ahmed's actual advice):
+#   # 1. Install kube-ps1 to show current context/namespace in shell prompt
+#   # 2. Use kubectx / kubens for safe context switching
+#   # 3. Create an alias that requires confirmation for production:
+#   #    alias kprod='echo "WARNING: production context!" && kubectl --context=prod-cluster'
+#   # 4. RBAC: restrict delete permissions on production for most developers
+#   # 5. Use kubectl's --dry-run=client before destructive actions

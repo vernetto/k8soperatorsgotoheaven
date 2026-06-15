@@ -1,0 +1,48 @@
+# Episode 27 — "The Sleeping Giant"
+# Culprit: Cluster autoscaler not scaling up — missing cloud IAM permissions
+# (Cloud-specific scenario; this manifest sets up what you'd observe in-cluster)
+
+---
+# A large pod that requires more resources than available on existing nodes
+# When autoscaler should add a node but IAM blocks it
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: big-job
+  namespace: default
+  labels:
+    scenario: episode-27
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: big-job
+  template:
+    metadata:
+      labels:
+        app: big-job
+    spec:
+      containers:
+      - name: job
+        image: nginx:stable
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+# In a real cloud cluster, the cluster-autoscaler would try to add nodes
+# but fail silently if it lacks IAM permissions to call the cloud API.
+#
+# SIMULATE in KIND (no autoscaler):
+#   The pods simply stay Pending. Check:
+#   kubectl get pods -l app=big-job
+#   kubectl describe pod -l app=big-job | grep Events -A10
+#
+# In a real cluster, DIAGNOSE:
+#   kubectl logs -n kube-system -l app=cluster-autoscaler | grep -i "error\|permission\|iam"
+#   # Look for: "Failed to create instances", "AccessDenied", "UnauthorizedOperation"
+#
+# FIX: Attach the correct IAM role/policy to the autoscaler's service account
+#   (aws-node-termination-handler, cluster-autoscaler role, etc.)

@@ -1,0 +1,83 @@
+# Episode 37 — "The Silent Sidecar"
+# Culprit: Istio sidecar injected on one pod but not the other — mTLS handshake fails
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mesh
+  labels:
+    scenario: episode-37
+    istio-injection: enabled   # ← sidecar auto-injection enabled for this namespace
+---
+# Service A: HAS Istio sidecar (because namespace label enables injection)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-a
+  namespace: mesh
+  labels:
+    scenario: episode-37
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: service-a
+  template:
+    metadata:
+      labels:
+        app: service-a
+      # No annotation override — will get injected
+    spec:
+      containers:
+      - name: app
+        image: curlimages/curl:8.5.0
+        command: ["sleep", "3600"]
+---
+# Service B: NO sidecar injection (annotation opts out)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-b
+  namespace: mesh
+  labels:
+    scenario: episode-37
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: service-b
+  template:
+    metadata:
+      labels:
+        app: service-b
+      annotations:
+        sidecar.istio.io/inject: "false"   # ← no Envoy sidecar on this pod
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-b
+  namespace: mesh
+spec:
+  selector:
+    app: service-b
+  ports:
+  - port: 80
+# EXPECTED (with Istio installed):
+#   service-a (with Envoy) tries mTLS → service-b (without Envoy) doesn't understand → reset
+#   kubectl exec -n mesh deploy/service-a -- curl http://service-b → "connection reset by peer"
+#
+# DIAGNOSE:
+#   kubectl get pods -n mesh   # check READY column: 2/2 vs 1/1
+#   istioctl proxy-status      # check mesh sync
+#   kubectl describe pod -n mesh -l app=service-b   # no istio-proxy container
+#
+# FIX: Either inject sidecar on service-b too (remove the annotation)
+#   OR configure a PeerAuthentication to allow PERMISSIVE mode

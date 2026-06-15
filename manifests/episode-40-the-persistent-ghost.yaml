@@ -1,0 +1,54 @@
+# Episode 40 — "The Persistent Ghost"
+# Culprit: PVC stuck in Terminating — a pod still holds a reference to it
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data
+  namespace: default
+  labels:
+    scenario: episode-40
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Pod that mounts the PVC
+apiVersion: v1
+kind: Pod
+metadata:
+  name: data-pod
+  namespace: default
+  labels:
+    scenario: episode-40
+spec:
+  containers:
+  - name: app
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: app-data
+# REPRODUCE:
+#   kubectl apply -f episode-40-the-persistent-ghost.yaml
+#   # Wait for pod to be Running, then try to delete the PVC first (wrong order):
+#   kubectl delete pvc app-data
+#   kubectl get pvc app-data   # shows Terminating — blocked by pod still using it
+#
+# DIAGNOSE:
+#   kubectl describe pvc app-data
+#   # Shows finalizer: kubernetes.io/pvc-protection
+#   # Shows "Used By: data-pod"
+#   kubectl get pod data-pod   # still running and holding the PVC
+#
+# FIX: Delete the pod first, then the PVC will self-terminate:
+#   kubectl delete pod data-pod
+#   kubectl get pvc app-data   # now terminates cleanly

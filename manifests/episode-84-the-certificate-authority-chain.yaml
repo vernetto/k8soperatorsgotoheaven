@@ -1,0 +1,75 @@
+# Episode 84 — "The Certificate Authority Chain"
+# Culprit: Webhook using self-signed cert — caBundle empty or wrong → TLS verify failure
+
+---
+# A ValidatingWebhook with an empty caBundle
+# (Real webhook server with valid cert but caBundle not configured)
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: episode-84-custom-webhook
+  labels:
+    scenario: episode-84
+webhooks:
+- name: validate.episode84.example.com
+  admissionReviewVersions: ["v1"]
+  sideEffects: None
+  failurePolicy: Fail
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: default
+      path: /validate
+    caBundle: ""   # ← EMPTY! API server cannot verify the webhook's TLS cert
+  rules:
+  - apiGroups: ["apps"]
+    apiVersions: ["v1"]
+    operations: ["CREATE", "UPDATE"]
+    resources: ["deployments"]
+  namespaceSelector:
+    matchLabels:
+      episode-84-test: "true"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: webhook-test-84
+  labels:
+    scenario: episode-84
+    episode-84-test: "true"
+---
+# The webhook service (no actual server behind it for this demo)
+apiVersion: v1
+kind: Service
+metadata:
+  name: webhook-service
+  namespace: default
+  labels:
+    scenario: episode-84
+spec:
+  selector:
+    app: webhook-server
+  ports:
+  - port: 443
+    targetPort: 8443
+# EXPECTED: Creating a Deployment in namespace webhook-test-84 fails with:
+#   "Internal error occurred: failed calling webhook ...
+#    x509: certificate signed by unknown authority"
+#
+# DIAGNOSE:
+#   kubectl create deployment test --image=nginx -n webhook-test-84
+#   # Error shows TLS/certificate verify failure
+#   kubectl describe validatingwebhookconfiguration episode-84-custom-webhook
+#   # caBundle: ""   (empty — no CA provided)
+#
+# FIX: Populate caBundle with the base64-encoded CA certificate that signed the webhook server's cert:
+#   # If using cert-manager, use the ca-injector to populate caBundle automatically:
+#   annotations:
+#     cert-manager.io/inject-ca-from: default/webhook-cert
+#
+#   # Manual:
+#   CA_BUNDLE=$(kubectl get secret webhook-tls -n default \
+#     -o jsonpath='{.data.ca\.crt}')
+#   kubectl patch validatingwebhookconfiguration episode-84-custom-webhook \
+#     --type=json -p="[{\"op\":\"replace\",
+#     \"path\":\"/webhooks/0/clientConfig/caBundle\",\"value\":\"$CA_BUNDLE\"}]"

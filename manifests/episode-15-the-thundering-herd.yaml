@@ -1,0 +1,62 @@
+# Episode 15 — "The Thundering Herd"
+# Culprit: HPA not scaling — metrics-server not installed
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: default
+  labels:
+    scenario: episode-15
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+        resources:
+          requests:
+            cpu: "100m"
+          limits:
+            cpu: "500m"
+---
+# HPA that will show <unknown> because metrics-server is not installed in vanilla KIND
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-app-hpa
+  namespace: default
+  labels:
+    scenario: episode-15
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-app
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+# EXPECTED: kubectl get hpa shows TARGETS as <unknown>/50%
+# DIAGNOSE:
+#   kubectl describe hpa web-app-hpa   # "unable to fetch metrics"
+#   kubectl get pods -n kube-system | grep metrics-server
+#
+# FIX: Install metrics-server:
+#   kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+#   # For KIND (self-signed certs), patch it:
+#   kubectl patch deployment metrics-server -n kube-system \
+#     --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'

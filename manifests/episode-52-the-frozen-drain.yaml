@@ -1,0 +1,58 @@
+# Episode 52 — "The Frozen Drain"
+# Culprit: PodDisruptionBudget blocks node drain — maintenance impossible
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-52
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:stable
+---
+# PDB that requires at least 2 pods available at all times
+# With only 2 replicas, drain can never evict even 1 pod
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-pdb
+  namespace: default
+  labels:
+    scenario: episode-52
+spec:
+  minAvailable: 2    # ← THE BUG: with 2 replicas, zero disruptions allowed
+  selector:
+    matchLabels:
+      app: api
+# REPRODUCE:
+#   kubectl apply -f episode-52-the-frozen-drain.yaml
+#   # Wait for both pods to be Running, then drain a node:
+#   kubectl drain kind-worker --ignore-daemonsets --delete-emptydir-data
+#   # Output: "Cannot evict pod as it would violate the pod's disruption budget."
+#
+# DIAGNOSE:
+#   kubectl get pdb api-pdb
+#   # Shows: MIN AVAILABLE=2, MAX UNAVAILABLE=N/A, ALLOWED DISRUPTIONS=0
+#   kubectl describe pdb api-pdb
+#
+# FIX option 1: Use maxUnavailable instead of minAvailable:
+#   spec:
+#     maxUnavailable: 1   # allow 1 pod to be down during maintenance
+#
+# FIX option 2: Temporarily scale up before draining:
+#   kubectl scale deployment api --replicas=3
+#   kubectl drain kind-worker --ignore-daemonsets --delete-emptydir-data
+#   kubectl scale deployment api --replicas=2

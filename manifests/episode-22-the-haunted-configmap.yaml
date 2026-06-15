@@ -1,0 +1,66 @@
+# Episode 22 — "The Haunted ConfigMap"
+# Culprit: App reads ConfigMap at startup only — no hot-reload, stale config persists
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+  labels:
+    scenario: episode-22
+data:
+  feature_flag: "false"    # ← we will change this later but the app won't see it
+  log_level: "info"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: config-reader-app
+  namespace: default
+  labels:
+    scenario: episode-22
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: config-reader-app
+  template:
+    metadata:
+      labels:
+        app: config-reader-app
+    spec:
+      volumes:
+      - name: config-volume
+        configMap:
+          name: app-config
+      containers:
+      - name: app
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "=== App startup: reading config ONCE ==="
+            FEATURE_FLAG=$(cat /config/feature_flag)
+            LOG_LEVEL=$(cat /config/log_level)
+            echo "feature_flag=$FEATURE_FLAG"
+            echo "log_level=$LOG_LEVEL"
+            echo "=== App is now running (config loaded at startup, never re-read) ==="
+            # Simulates an app that reads config only once at startup
+            while true; do
+              echo "Running with feature_flag=$FEATURE_FLAG log_level=$LOG_LEVEL (from startup)"
+              sleep 10
+            done
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+# REPRODUCE:
+#   kubectl logs -f -l app=config-reader-app   # note the initial values
+#   kubectl patch configmap app-config -p '{"data":{"feature_flag":"true","log_level":"debug"}}'
+#   # Wait ~60s for the mounted file to update (Kubernetes syncs after a delay)
+#   kubectl exec <pod> -- cat /config/feature_flag   # file IS updated
+#   kubectl logs -l app=config-reader-app           # but app still uses OLD values!
+#
+# FIX: Either restart pods on ConfigMap change (via reloader), or use the inotify
+#   mechanism to reload config, or use a Deployment annotation trick with a hash:
+#   checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}

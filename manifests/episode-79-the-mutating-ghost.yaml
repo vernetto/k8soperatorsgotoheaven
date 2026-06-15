@@ -1,0 +1,70 @@
+# Episode 79 — "The Mutating Ghost"
+# Culprit: MutatingAdmissionWebhook silently injects a label that prevents scheduling
+
+---
+# A MutatingWebhookConfiguration that adds a problematic node selector
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: episode-79-pod-mutator
+  labels:
+    scenario: episode-79
+webhooks:
+- name: inject-nodeselector.episode79.example.com
+  admissionReviewVersions: ["v1"]
+  sideEffects: None
+  failurePolicy: Ignore    # ← Ignore so the cluster still works
+  clientConfig:
+    service:
+      name: pod-mutator
+      namespace: default
+      path: /mutate
+    caBundle: ""
+  rules:
+  - apiGroups: [""]
+    apiVersions: ["v1"]
+    operations: ["CREATE"]
+    resources: ["pods"]
+  namespaceSelector:
+    matchLabels:
+      episode-79-mutate: "true"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mutated
+  labels:
+    scenario: episode-79
+    episode-79-mutate: "true"
+---
+# Since the webhook service doesn't exist (failurePolicy: Ignore),
+# we simulate the effect manually:
+# A pod that has the injected problematic nodeSelector
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ghost-mutated-pod
+  namespace: mutated
+  labels:
+    scenario: episode-79
+  annotations:
+    note: "This pod simulates what the MutatingWebhook would inject"
+spec:
+  nodeSelector:
+    gpu: "true"           # ← injected by the (simulated) webhook — no node has this label!
+  containers:
+  - name: app
+    image: nginx:stable
+# EXPECTED: Pod stays Pending because no node has label gpu=true
+#   The developer has NO IDEA why — they didn't add the nodeSelector themselves!
+#
+# DIAGNOSE:
+#   kubectl describe pod ghost-mutated-pod -n mutated
+#   # Events: "didn't match Pod's node affinity/selector"
+#   kubectl get pod ghost-mutated-pod -n mutated -o yaml | grep -A5 nodeSelector
+#   # Shows: gpu: "true" — but developer never set this!
+#   kubectl get mutatingwebhookconfiguration   # AHA! A webhook exists
+#   kubectl describe mutatingwebhookconfiguration episode-79-pod-mutator
+#
+# FIX: Identify and fix or remove the misbehaving MutatingWebhook:
+#   kubectl delete mutatingwebhookconfiguration episode-79-pod-mutator

@@ -1,0 +1,65 @@
+# Episode 69 — "The Kubelet's Expiration"
+# Culprit: Kubelet certificate expired — node goes NotReady, pods evicted
+
+---
+# A pod to observe node status and certificate expiry
+apiVersion: v1
+kind: Pod
+metadata:
+  name: node-monitor
+  namespace: default
+  labels:
+    scenario: episode-69
+spec:
+  serviceAccountName: default
+  containers:
+  - name: monitor
+    image: bitnami/kubectl:latest
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "=== Monitoring node health ==="
+        while true; do
+          echo "--- $(date) ---"
+          kubectl get nodes -o wide
+          echo ""
+          kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .status.conditions[?(@.type=="Ready")]}{.status}{"\t"}{.message}{"\n"}{end}{end}'
+          sleep 15
+        done
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: episode-69-monitor
+  labels:
+    scenario: episode-69
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+# SIMULATE kubelet cert expiry in KIND:
+#   # Check current kubelet certs on the node:
+#   docker exec kind-control-plane openssl x509 -noout -dates \
+#     -in /var/lib/kubelet/pki/kubelet-client-current.pem
+#
+#   # Kubelet cert auto-rotation is controlled by:
+#   # --rotate-certificates=true (default in KIND)
+#   # If rotation fails (e.g. CSR not approved), cert expires and node goes NotReady
+#
+# DIAGNOSE (on a real cluster with expired kubelet certs):
+#   kubectl get nodes   # shows NotReady
+#   kubectl describe node <name>   # shows: "kubelet stopped posting node status"
+#   # SSH to the node:
+#   journalctl -u kubelet | grep "certificate"
+#   openssl x509 -noout -dates -in /var/lib/kubelet/pki/kubelet-client-current.pem
+#
+# FIX:
+#   # Manually approve pending CSRs:
+#   kubectl get csr | grep Pending
+#   kubectl certificate approve <csr-name>
+#   # Or renew manually:
+#   # kubeadm certs renew all   (on control-plane)

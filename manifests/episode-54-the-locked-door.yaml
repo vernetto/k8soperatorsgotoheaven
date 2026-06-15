@@ -1,0 +1,73 @@
+# Episode 54 — "The Locked Door"
+# Culprit: Container runs as non-root but volume is owned by root — permission denied on writes
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data
+  namespace: default
+  labels:
+    scenario: episode-54
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: default
+  labels:
+    scenario: episode-54
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      securityContext:
+        runAsUser: 1000      # run as non-root user
+        runAsNonRoot: true
+        # fsGroup is intentionally MISSING — volume stays owned by root
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: app-data
+      containers:
+      - name: app
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Running as user: $(id)"
+            echo "Volume permissions:"
+            ls -la /data
+            echo "Attempting to write to volume..."
+            echo "test" > /data/testfile && echo "Write: SUCCESS" || echo "Write: FAILED (permission denied)"
+            sleep 3600
+        securityContext:
+          allowPrivilegeEscalation: false
+        volumeMounts:
+        - name: data
+          mountPath: /data
+# EXPECTED: "Write: FAILED (permission denied)"
+#   Volume is mounted with root ownership (uid=0), but container runs as uid=1000
+#
+# DIAGNOSE:
+#   kubectl exec <pod> -- ls -la /data   # shows: drwxr-xr-x root root
+#   kubectl exec <pod> -- id             # shows: uid=1000
+#
+# FIX: Add fsGroup to the pod's securityContext:
+#   securityContext:
+#     runAsUser: 1000
+#     runAsNonRoot: true
+#     fsGroup: 1000   # ← Kubernetes will chown the volume to this GID

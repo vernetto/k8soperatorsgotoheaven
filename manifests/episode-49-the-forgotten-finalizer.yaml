@@ -1,0 +1,61 @@
+# Episode 49 — "The Forgotten Finalizer"
+# Culprit: Namespace stuck Terminating — Custom Resource with finalizer from deleted CRD
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stuck-ns
+  labels:
+    scenario: episode-49
+---
+# REPRODUCE STEPS (run after applying this manifest):
+#
+# Step 1 — Install a simple CRD:
+#   kubectl apply -f - <<CRD
+#   apiVersion: apiextensions.k8s.io/v1
+#   kind: CustomResourceDefinition
+#   metadata:
+#     name: widgets.example.com
+#   spec:
+#     group: example.com
+#     names:
+#       kind: Widget
+#       plural: widgets
+#     scope: Namespaced
+#     versions:
+#     - name: v1
+#       served: true
+#       storage: true
+#       schema:
+#         openAPIV3Schema:
+#           type: object
+#   CRD
+#
+# Step 2 — Create a CR with a finalizer:
+#   kubectl apply -f - <<CR
+#   apiVersion: example.com/v1
+#   kind: Widget
+#   metadata:
+#     name: my-widget
+#     namespace: stuck-ns
+#     finalizers:
+#     - cleanup.example.com/widget   # ← finalizer that will never be cleared
+#   spec: {}
+#   CR
+#
+# Step 3 — Delete the CRD (controller is gone, finalizer will never be processed):
+#   kubectl delete crd widgets.example.com
+#
+# Step 4 — Try to delete the namespace:
+#   kubectl delete namespace stuck-ns
+#   kubectl get namespace stuck-ns   # shows Terminating forever
+#
+# DIAGNOSE:
+#   kubectl get namespace stuck-ns -o json | jq '.spec.finalizers'
+#   kubectl api-resources | grep widget   # CRD is gone — no controller to clear finalizer
+#
+# FIX (force-remove the finalizer via the API):
+#   kubectl get namespace stuck-ns -o json \
+#     | jq '.spec.finalizers = []' \
+#     | kubectl replace --raw "/api/v1/namespaces/stuck-ns/finalize" -f -

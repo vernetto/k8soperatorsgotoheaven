@@ -1,0 +1,62 @@
+# Episode 58 — "The Velvet Eviction"
+# Culprit: Velero backup silently failing — no alerts configured on backup status
+
+---
+# Simulate a Velero backup schedule without monitoring
+# (Velero CRD required: https://velero.io/docs/latest/basic-install/)
+
+# A ConfigMap that represents the backup schedule config (no Velero installed = no actual backups)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-config
+  namespace: default
+  labels:
+    scenario: episode-58
+data:
+  schedule: "0 2 * * *"       # daily at 2am
+  retention: "168h"            # 7 days
+  last_known_backup: "unknown"
+  monitoring_alert: "NONE"    # ← THE BUG: no alert on backup failure
+---
+# A CronJob that simulates a failing backup without alerting
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fake-backup
+  namespace: default
+  labels:
+    scenario: episode-58
+spec:
+  schedule: "*/2 * * * *"   # every 2 minutes for demo purposes
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: backup
+            image: busybox:1.36
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                echo "Starting backup at $(date)..."
+                # Simulate a backup failure silently
+                sleep 2
+                echo "ERROR: Connection to storage backend timed out" >&2
+                exit 1   # ← fails but nobody notices!
+# EXPECTED: CronJob runs and fails repeatedly — no alert fires
+#
+# DIAGNOSE:
+#   kubectl get jobs | grep fake-backup   # shows failed jobs accumulating
+#   kubectl get cronjob fake-backup       # shows LAST SCHEDULE and ACTIVE
+#   # But no alert was sent!
+#
+# FIX: Add alerting on backup failure
+#   For Velero: add PrometheusRule:
+#     alert: VeleroBackupFailed
+#     expr: velero_backup_failure_total > 0
+#     for: 5m
+#   For this demo CronJob, use kube_job_status_failed metric in Prometheus

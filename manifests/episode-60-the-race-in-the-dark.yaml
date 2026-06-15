@@ -1,0 +1,81 @@
+# Episode 60 — "The Race in the Dark"
+# Culprit: Two containers in same pod write to shared emptyDir without coordination — data corruption
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: race-condition-pod
+  namespace: default
+  labels:
+    scenario: episode-60
+spec:
+  volumes:
+  - name: shared-data
+    emptyDir: {}
+  containers:
+  - name: writer-a
+    image: busybox:1.36
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "Writer A starting..."
+        while true; do
+          # Non-atomic write: read-modify-write without lock
+          CURRENT=$(cat /data/counter 2>/dev/null || echo "0")
+          NEW=$((CURRENT + 1))
+          sleep 0.1  # simulate processing time (race window)
+          echo "$NEW" > /data/counter
+          echo "Writer A set counter to $NEW (read: $CURRENT)"
+          sleep 0.2
+        done
+    volumeMounts:
+    - name: shared-data
+      mountPath: /data
+  - name: writer-b
+    image: busybox:1.36
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "Writer B starting..."
+        while true; do
+          # Non-atomic write: same race condition
+          CURRENT=$(cat /data/counter 2>/dev/null || echo "0")
+          NEW=$((CURRENT + 1))
+          sleep 0.1
+          echo "$NEW" > /data/counter
+          echo "Writer B set counter to $NEW (read: $CURRENT)"
+          sleep 0.2
+        done
+    volumeMounts:
+    - name: shared-data
+      mountPath: /data
+  - name: observer
+    image: busybox:1.36
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "Observer watching the counter..."
+        PREV=0
+        while true; do
+          CURRENT=$(cat /data/counter 2>/dev/null || echo "0")
+          if [ "$CURRENT" -lt "$PREV" ]; then
+            echo "RACE CONDITION DETECTED: counter went from $PREV to $CURRENT (went backwards!)"
+          fi
+          PREV=$CURRENT
+          echo "Counter: $CURRENT"
+          sleep 0.3
+        done
+    volumeMounts:
+    - name: shared-data
+      mountPath: /data
+# EXPECTED: Observer will see counter go backwards — classic lost update / race condition
+# DIAGNOSE:
+#   kubectl logs race-condition-pod -c observer   # watch for "RACE CONDITION DETECTED"
+#   kubectl logs race-condition-pod -c writer-a
+#   kubectl logs race-condition-pod -c writer-b
+#
+# FIX: Use atomic file operations (write to tmp, then rename):
+#   echo "$NEW" > /data/counter.tmp && mv /data/counter.tmp /data/counter
+#   OR use a proper locking mechanism (flock)
+#   OR use a dedicated coordination service (Redis, etcd) instead of shared filesystem

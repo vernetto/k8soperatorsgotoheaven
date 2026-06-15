@@ -1,0 +1,69 @@
+# Episode 38 — "The Forbidden Fruit"
+# Culprit: Pod Security Admission blocks a DaemonSet that needs privileged operations
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    scenario: episode-38
+    # Pod Security Admission set to 'restricted' — blocks privileged containers
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+# A DaemonSet that legitimately needs privileged access (e.g. node metrics collector)
+# but is blocked by the namespace's PSA policy
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: monitoring
+  labels:
+    scenario: episode-38
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+    spec:
+      hostPID: true          # ← violates 'restricted' policy
+      hostNetwork: true      # ← violates 'restricted' policy
+      containers:
+      - name: node-exporter
+        image: prom/node-exporter:latest
+        securityContext:
+          privileged: true   # ← violates 'restricted' policy
+        ports:
+        - containerPort: 9100
+          hostPort: 9100
+        volumeMounts:
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+      volumes:
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: sys
+        hostPath:
+          path: /sys
+# EXPECTED: DaemonSet pods are rejected by the API server with:
+#   "pods ... is forbidden: violates PodSecurity 'restricted:latest'"
+#
+# DIAGNOSE:
+#   kubectl get pods -n monitoring          # no pods created
+#   kubectl get events -n monitoring        # shows PSA violation events
+#   kubectl describe daemonset node-exporter -n monitoring
+#
+# FIX option 1: Relax PSA for this namespace to 'privileged':
+#   kubectl label namespace monitoring \
+#     pod-security.kubernetes.io/enforce=privileged --overwrite
+#
+# FIX option 2: Use a separate namespace with privileged PSA just for this DaemonSet

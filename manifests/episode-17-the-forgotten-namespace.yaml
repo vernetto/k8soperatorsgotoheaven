@@ -1,0 +1,54 @@
+# Episode 17 — "The Forgotten Namespace"
+# Culprit: Secret exists in wrong namespace — pod can't find it
+
+---
+# Secret exists in 'default' namespace
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+  namespace: default     # ← secret is HERE
+  labels:
+    scenario: episode-17
+type: Opaque
+data:
+  password: c3VwZXJzZWNyZXQ=  # base64("supersecret")
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    scenario: episode-17
+---
+# Pod in 'production' namespace trying to use the secret from 'default'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-pod
+  namespace: production   # ← pod is HERE — different namespace!
+  labels:
+    scenario: episode-17
+spec:
+  containers:
+  - name: api
+    image: busybox:1.36
+    command: ["sleep", "3600"]
+    env:
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: db-credentials   # ← this secret does NOT exist in 'production'
+          key: password
+# EXPECTED: Pod fails to start with:
+#   Error: secret "db-credentials" not found
+#
+# DIAGNOSE:
+#   kubectl get secret db-credentials -n production   # not found
+#   kubectl get secret db-credentials -n default      # found!
+#   kubectl describe pod api-pod -n production
+#
+# FIX option 1: Create the secret in the production namespace:
+#   kubectl get secret db-credentials -n default -o yaml | \
+#     sed 's/namespace: default/namespace: production/' | kubectl apply -f -
+# FIX option 2: Move the pod to the default namespace

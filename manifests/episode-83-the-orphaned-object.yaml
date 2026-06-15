@@ -1,0 +1,62 @@
+# Episode 83 — "The Orphaned Object"
+# Culprit: Orphaned ReplicaSet with stale ownerReference — keeps reappearing when deleted
+
+---
+# A Deployment that manages a ReplicaSet
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-83
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:stable
+# REPRODUCE THE ORPHAN:
+#   kubectl apply -f episode-83-the-orphaned-object.yaml
+#
+#   # Get the ReplicaSet name:
+#   RS=$(kubectl get rs -l app=api -o jsonpath='{.items[0].metadata.name}')
+#
+#   # Manually patch the RS with a fake ownerReference (simulating a stale ref after Deployment deletion):
+#   kubectl patch rs $RS --type=json -p='[{
+#     "op": "add",
+#     "path": "/metadata/ownerReferences",
+#     "value": [{
+#       "apiVersion": "apps/v1",
+#       "kind": "Deployment",
+#       "name": "ghost-deployment",
+#       "uid": "00000000-0000-0000-0000-000000000000",
+#       "blockOwnerDeletion": true,
+#       "controller": true
+#     }]
+#   }]'
+#
+#   # Now delete the RS — it won't be garbage collected because owner UID doesn't match any real object:
+#   kubectl delete rs $RS
+#   kubectl get rs   # comes back! (actually in this case it doesn't because Deployment recreates it)
+#
+# REAL scenario: A controller recreates the RS even after you delete it
+#   kubectl get rs   # keeps reappearing
+#   kubectl get deploy,rs   # find the controller that owns it
+#   kubectl describe rs <name> | grep "Controlled By"
+#
+# DIAGNOSE:
+#   kubectl get rs -o json | jq '.items[].metadata.ownerReferences'
+#   # Shows owner UIDs — check if those UIDs still exist:
+#   kubectl get deployment -o jsonpath='{.items[].metadata.uid}'
+#
+# FIX: Stop the controller first, then delete the orphaned resource:
+#   kubectl delete deployment <parent>   # this cascades to the RS
+#   # OR: remove the ownerReference from the RS to allow manual deletion

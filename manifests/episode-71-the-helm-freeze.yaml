@@ -1,0 +1,68 @@
+# Episode 71 — "The Helm Freeze"
+# Culprit: Helm upgrade changes an immutable field (spec.selector) — upgrade fails
+
+---
+# Initial Helm-managed Deployment (simulate with kubectl)
+# Version 1 — original labels
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-71
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: api-1.0.0
+  annotations:
+    meta.helm.sh/release-name: api
+    meta.helm.sh/release-namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+      version: v1   # ← THIS IS THE IMMUTABLE FIELD — cannot be changed after creation
+  template:
+    metadata:
+      labels:
+        app: api
+        version: v1
+    spec:
+      containers:
+      - name: api
+        image: nginx:1.24-alpine
+# REPRODUCE:
+#   kubectl apply -f episode-71-the-helm-freeze.yaml
+#
+#   # Now try to "upgrade" by changing the selector (what Helm would do with a new chart version):
+#   kubectl apply -f - <<V2
+#   apiVersion: apps/v1
+#   kind: Deployment
+#   metadata:
+#     name: api
+#     namespace: default
+#   spec:
+#     replicas: 2
+#     selector:
+#       matchLabels:
+#         app: api
+#         version: v2   # ← CHANGED selector — immutable!
+#     template:
+#       metadata:
+#         labels:
+#           app: api
+#           version: v2
+#       spec:
+#         containers:
+#         - name: api
+#           image: nginx:1.25-alpine
+#   V2
+#   # Error: The Deployment "api" is invalid: spec.selector: Invalid value: ... field is immutable
+#
+# DIAGNOSE:
+#   helm upgrade api ./chart   # shows: "cannot patch Deployment ... field is immutable"
+#
+# FIX: Delete and recreate the Deployment (brief downtime), or use --force in Helm:
+#   helm upgrade api ./chart --force   # deletes and recreates the resource
+#   # OR: kubectl delete deployment api && helm upgrade api ./chart
+#   # PREVENTION: Never include dynamic values in spec.selector

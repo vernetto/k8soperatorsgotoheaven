@@ -1,0 +1,45 @@
+# Episode 19 — "The Lying Clock"
+# Culprit: Expired TLS certificate in a Secret — HTTPS connections rejected
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    scenario: episode-19
+---
+# An expired TLS certificate (self-signed, expired 2020-01-01)
+# Generated with: openssl req -x509 -nodes -days 1 -newkey rsa:2048 ...
+# This is a real expired cert for demonstration
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tls-secret
+  namespace: production
+  labels:
+    scenario: episode-19
+type: kubernetes.io/tls
+data:
+  # This is a self-signed cert that expired on 2020-01-02
+  # You can generate your own expired cert with:
+  # openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
+  #   -days 1 -nodes -subj "/CN=myapp.example.com" \
+  #   --set-timestamps 2019-12-31T00:00:00Z
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJwRENDQVN1Z0F3SUJBZ0lVSHVRcmI1WVlFYklGMlJZaU9aT2FoRTBBeTVrd0NnWUlLb1pJemowRUF3SXcKRlRFVE1CRUdBMVVFQXhNS2JYa2djM1ZpYVc1bk1CNFhEVEl3TURFeE1EQXdNREF3TUZvWERUSXdNREV4TURBd01EQXcKTUZvd0ZURVRNQkVHQTFVRUF4TUtiWGtnYzNWaWFXNW5NRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUUKT1VWd1lFR3k1TEpNUHlVT1Z5RFBaWE40MEMwek5iSFIzb1VrSGtCMHBKZ3RYWU9BcHFxeUNHakxYaVhmdENBUGVRbAoxMG1wNXE1d1RCZ2tPeU9CZ0RCK01CMEdBMVVkRGdRV0JCU2xqZE5KV3kwMHoySXhMaVFPaDFLZXlnNW5QVEF5QmdOVgpIUkVFR3pBWmdoY21kV3BoY21rdVpYaGhiWEJzWlM1amIyMHVjMlV3SGdZRFZSMFNCQmN3RllBVHBJM1RTVnN0Tk04aQpNUzRrRG9kU25zb09aejBqTUFvR0NDcUdTTTQ5QkFNQ0EwY0FNRVFDSUZOQUdMdUNRTE5ZTVhSNWlTcVN1Nlhpam5CdAoyT1dQbnpReHpRTXdkZjVyQWlCMVFCa01VcmlMTXBtbnFNZU9xZUxRZndLNy9FS2pGYnppWERpelBJbW1Bdz09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+  tls.key: LS0tLS1CRUdJTiBFQyBQUklWQVRFIEtFWS0tLS0tCk1IUUNBUUVFSUpLY0E4ZExISmtZbGVRS3VhWm5vY0VRek50MzQzdThzdjNLZWRtNnNtTlZvQWNHQlN1QkJBQUoKb1dRRFlnQUVPVVZ3WUVHeTVMSk1QeVVPVnlEUFpYTjQwQzB6TmJIUjNvVWtIa0IwcEpndFhZT0FwcXF5Q0dqTApYaVhmdENBUGVRbDEwbXA1cTV3VEJna095UT09Ci0tLS0tRU5EIEVDIFBSSVZBVEUgS0VZLS0tLS0K
+---
+# Regenerate with your own expired cert for a cleaner demo:
+# Step 1: Generate expired cert
+#   openssl req -x509 -newkey rsa:2048 -keyout /tmp/tls.key -out /tmp/tls.crt \
+#     -days 1 -nodes -subj "/CN=myapp.example.com"
+#   # Wait for it to expire, or backdate using faketime
+# Step 2:
+#   kubectl create secret tls tls-secret -n production \
+#     --cert=/tmp/tls.crt --key=/tmp/tls.key --dry-run=client -o yaml
+#
+# DIAGNOSE:
+#   kubectl get secret tls-secret -n production -o jsonpath='{.data.tls\.crt}' | \
+#     base64 -d | openssl x509 -noout -dates
+#
+# FIX: Renew the certificate and update the Secret, or install cert-manager

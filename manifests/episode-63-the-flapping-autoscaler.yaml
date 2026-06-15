@@ -1,0 +1,79 @@
+# Episode 63 — "The Flapping Autoscaler"
+# Culprit: HPA scales up and down rapidly — no scaleDown stabilization window
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-63
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:stable
+        resources:
+          requests:
+            cpu: "100m"
+          limits:
+            cpu: "200m"
+---
+# HPA with no stabilization window — will flap aggressively
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-hpa
+  namespace: default
+  labels:
+    scenario: episode-63
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 0    # ← THE BUG: immediate scale-down, causes flapping
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+# REPRODUCE:
+#   # Generate intermittent CPU load (spikes):
+#   kubectl run load --image=busybox -- /bin/sh -c \
+#     "while true; do kubectl exec deploy/api -- dd if=/dev/zero of=/dev/null bs=1M count=100; sleep 10; done"
+#   kubectl get hpa api-hpa -w   # watch REPLICAS column oscillate
+#
+# DIAGNOSE:
+#   kubectl describe hpa api-hpa   # shows rapid scaling events
+#   kubectl get events | grep "Scaled"
+#
+# FIX: Add a stabilization window to prevent immediate scale-down:
+#   behavior:
+#     scaleDown:
+#       stabilizationWindowSeconds: 300   # wait 5 minutes before scaling down

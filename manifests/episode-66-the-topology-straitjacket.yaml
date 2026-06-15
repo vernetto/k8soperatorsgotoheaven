@@ -1,0 +1,55 @@
+# Episode 66 — "The Topology Straitjacket"
+# Culprit: TopologySpreadConstraints too strict — not enough zones → pods Pending
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: default
+  labels:
+    scenario: episode-66
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule   # ← hard constraint — pods stay Pending if unsatisfied
+        labelSelector:
+          matchLabels:
+            app: web-app
+      containers:
+      - name: app
+        image: nginx:stable
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+# EXPECTED: In KIND (which has no zone labels by default), pods will be Pending:
+#   "0/N nodes are available: N node(s) didn't match pod's topology spread constraints"
+#
+# REPRODUCE:
+#   # In a real 3-zone cluster, if one zone has fewer nodes and maxSkew=1,
+#   # some pods will be stuck Pending waiting for that zone to catch up.
+#   #
+#   # In KIND, SIMULATE by labeling nodes with fake zones:
+#   kubectl label node kind-control-plane topology.kubernetes.io/zone=zone-a
+#   kubectl label node kind-worker topology.kubernetes.io/zone=zone-a  # only one zone!
+#   kubectl apply -f episode-66-the-topology-straitjacket.yaml
+#   # With only 1 zone and maxSkew=1, distribution across zones is impossible
+#
+# DIAGNOSE:
+#   kubectl describe pod -l app=web-app | grep -A3 "topology spread"
+#   kubectl get nodes --show-labels | grep zone
+#
+# FIX option 1: Add nodes in other zones (add zone-b, zone-c labels)
+# FIX option 2: Relax the constraint:
+#   whenUnsatisfiable: ScheduleAnyway   # soft constraint — try to spread but don't block

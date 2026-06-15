@@ -1,0 +1,78 @@
+# Episode 24 — "The Vanishing Act"
+# Culprit: High-priority pod preempts (evicts) lower-priority pods without warning
+
+---
+# Low-priority class
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: low-priority
+  labels:
+    scenario: episode-24
+value: 100
+globalDefault: false
+---
+# High-priority class
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+  labels:
+    scenario: episode-24
+value: 10000
+globalDefault: false
+---
+# Low-priority workload that fills up the node
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: batch-workers
+  namespace: default
+  labels:
+    scenario: episode-24
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: batch-workers
+  template:
+    metadata:
+      labels:
+        app: batch-workers
+    spec:
+      priorityClassName: low-priority
+      containers:
+      - name: worker
+        image: nginx:stable
+        resources:
+          requests:
+            memory: "200Mi"
+          limits:
+            memory: "200Mi"
+---
+# High-priority pod that will preempt the batch workers
+apiVersion: v1
+kind: Pod
+metadata:
+  name: critical-service
+  namespace: default
+  labels:
+    scenario: episode-24
+spec:
+  priorityClassName: high-priority
+  containers:
+  - name: critical
+    image: nginx:stable
+    resources:
+      requests:
+        memory: "500Mi"
+      limits:
+        memory: "500Mi"
+# EXPECTED: critical-service pod causes eviction of batch-workers to make room
+# DIAGNOSE:
+#   kubectl get events | grep Preempt
+#   kubectl describe pod critical-service | grep "Preemption"
+#   kubectl get pods -w    # watch batch-workers disappear
+#
+# FIX: Use Pod Disruption Budgets for critical low-priority workloads,
+#   or size nodes appropriately, or reduce priority differential

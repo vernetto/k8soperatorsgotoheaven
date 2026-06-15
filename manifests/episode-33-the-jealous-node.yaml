@@ -1,0 +1,57 @@
+# Episode 33 — "The Jealous Node"
+# Culprit: Missing podAntiAffinity — all replicas land on same node (no HA)
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-33
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      # No podAntiAffinity — all 3 replicas can land on the same node
+      containers:
+      - name: api
+        image: nginx:stable
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+# EXPECTED: In a KIND cluster with 1 node, all pods land on the same node (forced).
+#   In a multi-node cluster, pods may still cluster on one node by chance.
+#
+# REPRODUCE multi-node situation:
+#   kind create cluster --config=- <<KINDCFG
+#   kind: Cluster
+#   apiVersion: kind.x-k8s.io/v1alpha4
+#   nodes:
+#   - role: control-plane
+#   - role: worker
+#   - role: worker
+#   KINDCFG
+#   kubectl apply -f episode-33-the-jealous-node.yaml
+#   kubectl get pods -o wide   # check node column — all may be on same worker
+#
+# DIAGNOSE:
+#   kubectl get pods -o wide -l app=api   # all same NODE column
+#
+# FIX: Add podAntiAffinity to spread across nodes:
+#   affinity:
+#     podAntiAffinity:
+#       preferredDuringSchedulingIgnoredDuringExecution:
+#       - weight: 100
+#         podAffinityTerm:
+#           labelSelector:
+#             matchLabels:
+#               app: api
+#           topologyKey: kubernetes.io/hostname

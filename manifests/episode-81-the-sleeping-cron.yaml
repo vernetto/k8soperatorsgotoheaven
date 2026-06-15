@@ -1,0 +1,50 @@
+# Episode 81 — "The Sleeping Cron"
+# Culprit: startingDeadlineSeconds too short — CronJob misses its window and is skipped
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: report-generator
+  namespace: default
+  labels:
+    scenario: episode-81
+spec:
+  schedule: "*/5 * * * *"   # every 5 minutes
+  startingDeadlineSeconds: 10   # ← THE BUG: only 10 seconds to start after scheduled time
+                                #   If the cluster is under load and the pod can't start
+                                #   within 10s of the scheduled time, the run is SKIPPED
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: reporter
+            image: busybox:1.36
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                echo "Generating report at $(date)..."
+                sleep 30
+                echo "Report generated successfully"
+# REPRODUCE:
+#   # Create resource pressure so pods take >10s to schedule:
+#   kubectl apply -f episode-23-the-pod-that-ate-the-world.yaml
+#   # Now the CronJob's pod takes >10s to start → run is skipped silently
+#
+#   # Check missed schedules (if >100 are missed, CronJob is permanently halted):
+#   kubectl get cronjob report-generator
+#   kubectl describe cronjob report-generator   # shows "Missed schedule" events
+#
+# DIAGNOSE:
+#   kubectl get events | grep "report-generator" | grep -i "miss\|skip"
+#   kubectl describe cronjob report-generator
+#   # Look for: "Cannot determine if job needs to be started"
+#   # or: missed scheduled time
+#
+# FIX: Increase startingDeadlineSeconds or remove it to use default (nil = no deadline):
+#   startingDeadlineSeconds: 300   # 5 minutes grace period

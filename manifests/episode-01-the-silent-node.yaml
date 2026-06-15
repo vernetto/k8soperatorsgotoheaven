@@ -1,0 +1,52 @@
+# Episode 01 — "The Silent Node"
+# Culprit: Zombie pods holding memory requests hostage — new pod stays Pending
+# Setup: Create pods that consume all available memory requests, then create one more that can't schedule
+
+---
+# A "zombie" deployment consuming most node memory (requests but no real use)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-hog
+  namespace: default
+  labels:
+    scenario: episode-01
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: memory-hog
+  template:
+    metadata:
+      labels:
+        app: memory-hog
+    spec:
+      containers:
+      - name: hog
+        image: nginx:stable
+        resources:
+          requests:
+            memory: "400Mi"
+          limits:
+            memory: "400Mi"
+---
+# The new pod that gets stuck Pending because there is no room
+apiVersion: v1
+kind: Pod
+metadata:
+  name: new-api-pod
+  namespace: default
+  labels:
+    scenario: episode-01
+spec:
+  containers:
+  - name: api
+    image: nginx:stable
+    resources:
+      requests:
+        memory: "500Mi"
+      limits:
+        memory: "500Mi"
+# EXPECTED: new-api-pod will be Pending with "Insufficient memory"
+# FIX: kubectl delete deployment memory-hog
+#      Or add a node, or reduce resource requests

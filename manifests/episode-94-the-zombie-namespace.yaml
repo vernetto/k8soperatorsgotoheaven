@@ -1,0 +1,79 @@
+# Episode 94 — "The Zombie Namespace"
+# Culprit: Multiple resources with stale finalizers block namespace deletion
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zombie-ns
+  labels:
+    scenario: episode-94
+---
+# Resources with custom finalizers that will never be cleared
+# (simulating a dead operator that no longer processes these finalizers)
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-with-finalizer
+  namespace: zombie-ns
+  labels:
+    scenario: episode-94
+  finalizers:
+  - cleanup.dead-operator.example.com/config   # ← operator is gone, never cleared
+data:
+  key: value
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-with-finalizer
+  namespace: zombie-ns
+  labels:
+    scenario: episode-94
+  finalizers:
+  - cleanup.dead-operator.example.com/serviceaccount   # ← same dead operator
+---
+# Normal resources (no finalizer — these delete fine)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: normal-deployment
+  namespace: zombie-ns
+  labels:
+    scenario: episode-94
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: normal
+  template:
+    metadata:
+      labels:
+        app: normal
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+# REPRODUCE:
+#   kubectl apply -f episode-94-the-zombie-namespace.yaml
+#   kubectl delete namespace zombie-ns
+#   kubectl get namespace zombie-ns   # Terminating... forever
+#
+# DIAGNOSE:
+#   kubectl get namespace zombie-ns -o json | jq '.status'
+#   kubectl get all,configmap,serviceaccount -n zombie-ns   # see remaining resources
+#   kubectl get configmap config-with-finalizer -n zombie-ns -o json | jq '.metadata.finalizers'
+#   # Shows finalizers that are blocking deletion
+#
+# FIX: Remove finalizers from each blocking resource:
+#   # Option 1: Patch each resource to remove finalizers:
+#   kubectl patch configmap config-with-finalizer -n zombie-ns \
+#     --type=json -p='[{"op":"remove","path":"/metadata/finalizers"}]'
+#   kubectl patch serviceaccount sa-with-finalizer -n zombie-ns \
+#     --type=json -p='[{"op":"remove","path":"/metadata/finalizers"}]'
+#
+#   # Option 2: Force-delete the namespace via the API:
+#   kubectl get namespace zombie-ns -o json \
+#     | jq '.spec.finalizers = []' \
+#     | kubectl replace --raw "/api/v1/namespaces/zombie-ns/finalize" -f -

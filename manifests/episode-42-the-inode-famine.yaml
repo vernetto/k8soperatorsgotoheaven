@@ -1,0 +1,52 @@
+# Episode 42 — "The Inode Famine"
+# Culprit: Inode exhaustion — disk has free space but cannot create new files
+
+---
+# A pod that creates thousands of tiny files (exhausting inodes)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inode-exhaustor
+  namespace: default
+  labels:
+    scenario: episode-42
+spec:
+  containers:
+  - name: exhaustor
+    image: busybox:1.36
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "Creating many small files to exhaust inodes on emptyDir..."
+        mkdir -p /tmp/inode-test
+        i=0
+        while true; do
+          touch /tmp/inode-test/file_$i
+          i=$((i+1))
+          if [ $((i % 1000)) -eq 0 ]; then
+            echo "Created $i files"
+            df -i /tmp/inode-test   # watch inode usage
+          fi
+        done
+    volumeMounts:
+    - name: scratch
+      mountPath: /tmp
+  volumes:
+  - name: scratch
+    emptyDir: {}
+# REPRODUCE:
+#   kubectl apply -f episode-42-the-inode-famine.yaml
+#   # Let it run for a while, then in another pod try to create a file:
+#   kubectl exec inode-exhaustor -- touch /tmp/newfile
+#   # Eventually: "No space left on device" (even though df shows space available)
+#
+# DIAGNOSE:
+#   kubectl exec inode-exhaustor -- df -i /tmp   # shows IUse% near 100%
+#   kubectl exec inode-exhaustor -- df -h /tmp   # shows plenty of free space
+#   # On the node:
+#   docker exec kind-control-plane df -i         # global inode usage
+#
+# FIX:
+#   # Identify the namespace/pod causing inode exhaustion:
+#   kubectl exec inode-exhaustor -- find /tmp -type f | wc -l
+#   # Clean up, implement log rotation, or configure ephemeral-storage limits

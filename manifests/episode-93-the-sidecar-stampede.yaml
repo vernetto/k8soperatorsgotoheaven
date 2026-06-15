@@ -1,0 +1,82 @@
+# Episode 93 — "The Sidecar Stampede"
+# Culprit: Log shipper sidecar with no rate limits — floods network with log data
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-with-loud-logger
+  namespace: default
+  labels:
+    scenario: episode-93
+spec:
+  replicas: 5   # multiply the problem across 5 pods
+  selector:
+    matchLabels:
+      app: app-with-loud-logger
+  template:
+    metadata:
+      labels:
+        app: app-with-loud-logger
+    spec:
+      volumes:
+      - name: shared-logs
+        emptyDir: {}
+      containers:
+      # Main application — generates logs at high rate
+      - name: app
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "App started. Generating logs..."
+            while true; do
+              # Simulate a chatty application writing lots of logs
+              for i in $(seq 1 100); do
+                echo "$(date -Iseconds) INFO request_id=$(cat /dev/urandom | tr -dc 'a-f0-9' | head -c32) method=GET path=/api/v1/items status=200 duration_ms=$((RANDOM % 100)) user_agent=Mozilla payload=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c200)"
+              done
+              sleep 0.1  # 100 log lines every 0.1s = 1000 lines/sec per pod
+            done
+        volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log/app
+      # Log shipper sidecar — NO rate limiting, ships everything immediately
+      - name: log-shipper
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Log shipper starting — NO rate limit configured!"
+            # Simulate shipping logs to a remote endpoint without rate limiting
+            while true; do
+              # Simulates fluent-bit/fluentd shipping all logs immediately
+              LINES=$(wc -l < /dev/stdin 2>/dev/null || echo "1000")
+              echo "Shipping batch of ~1000 log lines to log aggregator..."
+              # In a real scenario this would be: curl -X POST https://logs.example.com/ingest ...
+              sleep 0.1   # ships 10 times/sec — no throttling!
+            done
+        # No memory limits — will grow unbounded with log backlog
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "32Mi"
+          # NO LIMITS on the log shipper!
+        volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log/app
+# EXPECTED: 5 pods × 1000 log lines/sec = 5000 lines/sec flowing to the log aggregator
+#   Network bandwidth is saturated; other pods on the same node experience packet loss
+#
+# DIAGNOSE:
+#   kubectl top pods -l app=app-with-loud-logger   # high CPU/network usage
+#   # On the node: sar -n DEV 1 10   (watch eth0 bytes/sec spike)
+#
+# FIX: Add rate limiting and memory limits to the log shipper:
+#   # For fluent-bit:
+#   #   [INPUT]
+#   #     Name              tail
+#   #     Mem_Buf_Limit     5MB     ← cap memory buffer
+#   #     storage.type      filesystem
+#   #   [OUTPUT]
+#   #     Name  http
+#   #     Rate_Limit 1000/s        ← throttle output rate

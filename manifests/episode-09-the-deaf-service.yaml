@@ -1,0 +1,63 @@
+# Episode 09 — "The Deaf Service"
+# Culprit: Service selector doesn't match pod labels → no endpoints
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: default
+  labels:
+    scenario: episode-09
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+      version: v2        # ← pod has version: v2
+  template:
+    metadata:
+      labels:
+        app: backend
+        version: v2
+    spec:
+      containers:
+      - name: backend
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: default
+  labels:
+    scenario: episode-09
+spec:
+  selector:
+    app: backend
+    version: v1         # ← service looks for v1 but pods are v2 → 0 endpoints
+  ports:
+  - port: 80
+    targetPort: 80
+---
+# A client pod to test connectivity
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client
+  namespace: default
+  labels:
+    scenario: episode-09
+spec:
+  containers:
+  - name: client
+    image: curlimages/curl:8.5.0
+    command: ["sleep", "3600"]
+# EXPECTED: Service has 0 endpoints; curl from client to backend hangs / connection refused
+# DIAGNOSE:
+#   kubectl get endpoints backend       # shows "<none>"
+#   kubectl describe service backend    # shows Selector: app=backend,version=v1
+#   kubectl get pods --show-labels      # shows version=v2
+# FIX: Fix the service selector to match version: v2

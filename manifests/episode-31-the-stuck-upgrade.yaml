@@ -1,0 +1,44 @@
+# Episode 31 — "The Stuck Upgrade"
+# Culprit: maxUnavailable:0 + only 1 replica = deadlock — rolling update can never proceed
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-31
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0        # ← can't add pods beyond replica count
+      maxUnavailable: 0  # ← can't take pods below replica count
+      # Result: with 1 replica, Kubernetes cannot replace it (can't go above 1, can't go below 1)
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:1.24-alpine
+# REPRODUCE:
+#   kubectl set image deployment/api api=nginx:1.25-alpine
+#   kubectl rollout status deployment/api   # hangs forever
+#   kubectl get pods -w                     # no new pod is ever created
+#
+# DIAGNOSE:
+#   kubectl describe deployment api | grep -A5 "RollingUpdateStrategy"
+#   # Shows: Max Surge: 0, Max Unavailable: 0
+#   # With 1 replica this is a deadlock
+#
+# FIX:
+#   maxSurge: 1    (allow 1 extra pod during update)
+#   maxUnavailable: 0  (still keep at least 1 available)
+#   # OR for a single-replica deployment: maxUnavailable: 1, maxSurge: 0

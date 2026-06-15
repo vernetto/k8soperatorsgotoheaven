@@ -1,0 +1,92 @@
+# Episode 75 — "The Cert-Manager Silence"
+# Culprit: cert-manager issues cert into wrong Secret name — Ingress TLS references different Secret
+
+---
+# cert-manager Certificate that writes to 'api-tls-cert' Secret
+# (Requires cert-manager: kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml)
+#
+# apiVersion: cert-manager.io/v1
+# kind: Certificate
+# metadata:
+#   name: api-certificate
+#   namespace: default
+# spec:
+#   secretName: api-tls-cert       # ← cert-manager writes the cert HERE
+#   issuerRef:
+#     name: letsencrypt-prod
+#     kind: ClusterIssuer
+#   dnsNames:
+#   - api.example.com
+
+---
+# Ingress that references a DIFFERENT Secret name (the bug)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-ingress
+  namespace: default
+  labels:
+    scenario: episode-75
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  tls:
+  - hosts:
+    - api.example.com
+    secretName: api-tls            # ← WRONG! cert-manager wrote to 'api-tls-cert'
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api
+            port:
+              number: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-75
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:stable
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-75
+spec:
+  selector:
+    app: api
+  ports:
+  - port: 80
+# EXPECTED: HTTPS connections to api.example.com fail or show browser certificate error
+#   because the Ingress is looking for Secret 'api-tls' which doesn't exist
+#
+# DIAGNOSE:
+#   kubectl get secret api-tls -n default      # not found
+#   kubectl get secret api-tls-cert -n default # found! (that's where cert-manager wrote it)
+#   kubectl describe ingress api-ingress       # shows TLS: api-tls terminates api.example.com
+#
+# FIX: Align the secretName in the Certificate and the Ingress:
+#   Either change Certificate.spec.secretName: api-tls
+#   Or change Ingress.spec.tls[0].secretName: api-tls-cert

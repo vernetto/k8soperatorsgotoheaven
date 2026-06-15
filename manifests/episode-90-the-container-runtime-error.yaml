@@ -1,0 +1,70 @@
+# Episode 90 — "The Container Runtime Error"
+# Culprit: CreateContainerConfigError — pod references a Secret or ConfigMap that doesn't exist
+
+---
+# The ConfigMap EXISTS
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+  labels:
+    scenario: episode-90
+data:
+  APP_ENV: "production"
+  LOG_LEVEL: "info"
+---
+# The Secret is intentionally MISSING (simulates a deploy that forgot to create it)
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: app-secrets   ← THIS IS NOT CREATED
+# (commenting it out is the bug)
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-90
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:stable
+        envFrom:
+        - configMapRef:
+            name: app-config         # ← EXISTS — OK
+        - secretRef:
+            name: app-secrets        # ← DOES NOT EXIST — CreateContainerConfigError!
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets      # ← same missing secret
+              key: db_host
+# EXPECTED: Pods immediately show CreateContainerConfigError (or ContainerCreating stuck)
+#   The kubelet cannot configure the container because a required Secret is missing.
+#
+# DIAGNOSE:
+#   kubectl get pods -l app=api         # STATUS: CreateContainerConfigError
+#   kubectl describe pod <name>
+#   # Events: "Error: secret "app-secrets" not found"
+#   kubectl get secret app-secrets      # not found
+#
+# FIX: Create the missing Secret:
+#   kubectl create secret generic app-secrets \
+#     --from-literal=db_host=postgres.default.svc.cluster.local \
+#     --from-literal=db_password=mypassword \
+#     --from-literal=api_key=abc123
+#   # Pods will automatically restart and succeed

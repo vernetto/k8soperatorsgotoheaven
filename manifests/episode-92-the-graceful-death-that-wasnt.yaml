@@ -1,0 +1,77 @@
+# Episode 92 — "The Graceful Death That Wasn't"
+# Culprit: Job pod not handling SIGTERM — data pipeline writes corrupt partial output
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: output-dir-config
+  namespace: default
+  labels:
+    scenario: episode-92
+data:
+  output_path: "/data/output"
+---
+# A Job that does NOT handle SIGTERM — writes data non-atomically
+# When Kubernetes sends SIGTERM (e.g. node drain, preemption, timeout),
+# the job dies mid-write and leaves corrupt partial output
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-pipeline
+  namespace: default
+  labels:
+    scenario: episode-92
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: output
+        emptyDir: {}
+      containers:
+      - name: pipeline
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Pipeline starting. Writing output (no SIGTERM handler)..."
+            OUTPUT=/data/output/result.json
+
+            # Start a multi-step non-atomic write
+            echo '{"status": "processing",' > $OUTPUT
+            echo "Step 1/5 complete"; sleep 5
+
+            echo '"records": [' >> $OUTPUT
+            echo "Step 2/5 complete"; sleep 5
+
+            # If SIGTERM arrives here, the file is half-written and INVALID JSON!
+            for i in $(seq 1 100); do
+              echo "{\"id\": $i, \"value\": \"data$i\"}," >> $OUTPUT
+              sleep 0.2
+            done
+
+            echo '"done": true}' >> $OUTPUT
+            echo "Pipeline complete. Output written."
+        volumeMounts:
+        - name: output
+          mountPath: /data/output
+# REPRODUCE:
+#   kubectl apply -f episode-92-the-graceful-death-that-wasnt.yaml
+#   # While job is running (in Step 2), send SIGTERM by deleting the pod:
+#   kubectl delete pod -l job-name=data-pipeline --grace-period=5
+#   # Check the output file (it will be corrupt/partial):
+#   kubectl logs <pod> --previous
+#
+# DIAGNOSE:
+#   kubectl logs <pod>   # see which step it was on when killed
+#   # Output file will be truncated/invalid JSON
+#
+# FIX: Implement SIGTERM handler and atomic writes:
+#   # In shell:
+#   trap 'echo "SIGTERM received, cleaning up..."; rm -f /data/output/result.json.tmp; exit 1' TERM
+#   # Write to a temp file, then rename atomically:
+#   do_all_processing > /data/output/result.json.tmp
+#   mv /data/output/result.json.tmp /data/output/result.json
+#   echo "Done"

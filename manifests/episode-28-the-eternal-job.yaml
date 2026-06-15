@@ -1,0 +1,46 @@
+# Episode 28 — "The Eternal Job"
+# Culprit: CronJob with no concurrencyPolicy — overlapping executions pile up
+
+---
+# A CronJob that takes longer than its schedule interval
+# and has no concurrency protection
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: data-processor
+  namespace: default
+  labels:
+    scenario: episode-28
+spec:
+  schedule: "*/1 * * * *"   # runs every minute
+  # concurrencyPolicy: Allow is the DEFAULT — multiple runs can overlap!
+  # concurrencyPolicy: Allow  # ← this is the bug (implicit default)
+  successfulJobsHistoryLimit: 10
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: processor
+            image: busybox:1.36
+            command: ["/bin/sh", "-c"]
+            args:
+              - |
+                echo "Processing data... (takes 3 minutes)"
+                sleep 180   # takes 3 minutes but runs every 1 minute
+                echo "Done!"
+# EXPECTED: After a few minutes, multiple Job pods run simultaneously
+#   (job from minute 1 is still running when minutes 2, 3, 4 start)
+#
+# DIAGNOSE:
+#   kubectl get pods -l job-name   # multiple pods running at once
+#   kubectl get jobs               # multiple active jobs
+#   kubectl get cronjob data-processor   # ACTIVE > 1
+#
+# FIX: Set concurrencyPolicy to Forbid or Replace:
+#   spec:
+#     concurrencyPolicy: Forbid   # skip new run if previous is still running
+#     # OR
+#     concurrencyPolicy: Replace  # kill the old run and start fresh

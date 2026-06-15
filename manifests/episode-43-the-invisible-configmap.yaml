@@ -1,0 +1,73 @@
+# Episode 43 — "The Invisible ConfigMap"
+# Culprit: ConfigMap mounted with subPath — file is never updated when ConfigMap changes
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+  labels:
+    scenario: episode-43
+data:
+  config.yaml: |
+    feature_flag: false
+    log_level: info
+    max_connections: 10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: default
+  labels:
+    scenario: episode-43
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      volumes:
+      - name: config-volume
+        configMap:
+          name: app-config
+      containers:
+      - name: app
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "=== Config at startup ==="
+            cat /app/config.yaml
+            echo ""
+            echo "=== Watching for changes (subPath mounts never update!) ==="
+            while true; do
+              echo "--- Current content of /app/config.yaml ---"
+              cat /app/config.yaml
+              sleep 15
+            done
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config.yaml
+          subPath: config.yaml   # ← THE BUG: subPath mounts bypass ConfigMap hot-reload
+# REPRODUCE:
+#   kubectl apply -f episode-43-the-invisible-configmap.yaml
+#   kubectl logs -f deploy/app &
+#   # Update the ConfigMap:
+#   kubectl patch configmap app-config -p '{"data":{"config.yaml":"feature_flag: true\nlog_level: debug\nmax_connections: 50\n"}}'
+#   # Wait 60+ seconds — the file inside the pod NEVER updates
+#   kubectl exec <pod> -- cat /app/config.yaml   # still shows OLD content
+#
+# DIAGNOSE:
+#   kubectl describe pod <name> | grep -A5 Mounts   # shows subPath
+#
+# FIX option 1: Remove subPath, mount the whole directory:
+#   mountPath: /app/config/
+#   (access config at /app/config/config.yaml — updates after ~60s)
+# FIX option 2: Trigger pod restart on ConfigMap change using a reloader
+#   (e.g. Reloader by Stakater, or sha256 annotation trick in Helm)

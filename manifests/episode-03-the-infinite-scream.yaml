@@ -1,0 +1,58 @@
+# Episode 03 — "The Infinite Scream"
+# Culprit: Missing required environment variable — app crashes on startup → CrashLoopBackOff
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+  labels:
+    scenario: episode-03
+data:
+  APP_PORT: "8080"
+  # DATABASE_URL is intentionally MISSING from here
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: default
+  labels:
+    scenario: episode-03
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      containers:
+      - name: api
+        # This init-crash image exits 1 when DATABASE_URL is missing
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Starting application..."
+            if [ -z "$DATABASE_URL" ]; then
+              echo "FATAL: DATABASE_URL environment variable is not set" >&2
+              exit 1
+            fi
+            echo "Connected to $DATABASE_URL"
+            sleep 3600
+        env:
+        - name: APP_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: APP_PORT
+        # DATABASE_URL env var is intentionally NOT provided
+# EXPECTED: Pod crashes immediately → CrashLoopBackOff
+# DIAGNOSE: kubectl logs api-server-<hash> --previous
+# FIX: Add DATABASE_URL env var to the deployment, e.g.:
+#   - name: DATABASE_URL
+#     value: "postgres://user:pass@db:5432/mydb"

@@ -1,0 +1,30 @@
+# Episode 02 — "The Ghost Image"
+# Culprit: Wrong image tag — tag does not exist in registry
+# Setup: Deploy with a non-existent image tag → ImagePullBackOff
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-deployment
+  namespace: default
+  labels:
+    scenario: episode-02
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:v99.99.99-does-not-exist   # ← this tag does not exist
+        ports:
+        - containerPort: 80
+# EXPECTED: Pods go into ImagePullBackOff / ErrImagePull
+# DIAGNOSE: kubectl describe pod <pod-name> | grep -A5 Events
+# FIX: kubectl set image deployment/api-deployment api=nginx:stable

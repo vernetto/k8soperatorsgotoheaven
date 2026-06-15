@@ -1,0 +1,52 @@
+# Episode 12 — "The Forbidden Zone"
+# Culprit: RBAC — ServiceAccount missing permissions → 403 Forbidden
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    scenario: episode-12
+---
+# ServiceAccount with NO permissions (intentionally no ClusterRoleBinding)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-controller
+  namespace: production
+  labels:
+    scenario: episode-12
+---
+# A pod that tries to list pods via the Kubernetes API using the SA above
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-client
+  namespace: production
+  labels:
+    scenario: episode-12
+spec:
+  serviceAccountName: app-controller
+  containers:
+  - name: kubectl
+    image: bitnami/kubectl:latest
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "Trying to list pods in production namespace..."
+        kubectl get pods -n production
+        echo "Exit code: $?"
+        sleep 3600
+# EXPECTED: Pod starts but the kubectl command exits with:
+#   Error from server (Forbidden): pods is forbidden:
+#   User "system:serviceaccount:production:app-controller" cannot list resource "pods"
+#
+# DIAGNOSE:
+#   kubectl auth can-i list pods -n production --as=system:serviceaccount:production:app-controller
+#   kubectl get rolebinding,clusterrolebinding -A | grep app-controller
+#
+# FIX: Create a Role + RoleBinding:
+#   kubectl create role pod-reader --verb=get,list,watch --resource=pods -n production
+#   kubectl create rolebinding app-controller-pod-reader \
+#     --role=pod-reader --serviceaccount=production:app-controller -n production

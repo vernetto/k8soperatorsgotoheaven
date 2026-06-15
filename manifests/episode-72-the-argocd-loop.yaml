@@ -1,0 +1,76 @@
+# Episode 72 — "The ArgoCD Loop"
+# Culprit: ArgoCD perpetually OutOfSync — application generates runtime annotations that cause drift
+
+---
+# The live deployment that ArgoCD manages
+# ArgoCD compares desired state (Git) vs live state
+# Some controllers add annotations at runtime (e.g. last-applied, kubectl.kubernetes.io/*)
+# that are not in Git → ArgoCD sees "drift" → syncs → controller re-adds → infinite loop
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-72
+    argocd.argoproj.io/app: episode-72-demo
+  # ArgoCD will fight to remove these runtime-generated annotations:
+  # kubectl.kubernetes.io/last-applied-configuration: ...
+  # deployment.kubernetes.io/revision: "1"
+  # These are added by controllers and NOT in Git — causing perpetual drift
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: nginx:stable
+---
+# ConfigMap to simulate the ArgoCD Application object
+# (ArgoCD CRD required for a real Application object)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: episode-72-argocd-app-simulation
+  namespace: default
+  labels:
+    scenario: episode-72
+data:
+  description: |
+    This ConfigMap documents the ArgoCD Application configuration
+    that would cause the perpetual OutOfSync loop.
+
+    ArgoCD Application spec (requires ArgoCD installed):
+      apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      metadata:
+        name: episode-72-demo
+        namespace: argocd
+      spec:
+        project: default
+        source:
+          repoURL: https://github.com/example/k8s-manifests
+          targetRevision: HEAD
+          path: apps/api
+        destination:
+          server: https://kubernetes.default.svc
+          namespace: default
+        syncPolicy:
+          automated:
+            selfHeal: true   ← this + runtime annotations = infinite loop
+
+    FIX: Add ignoreDifferences in the Application spec:
+      ignoreDifferences:
+      - group: apps
+        kind: Deployment
+        jsonPointers:
+        - /metadata/annotations/deployment.kubernetes.io~1revision
+        - /metadata/annotations/kubectl.kubernetes.io~1last-applied-configuration
+      OR use server-side apply and configure ArgoCD accordingly.

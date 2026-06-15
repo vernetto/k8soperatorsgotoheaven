@@ -1,0 +1,72 @@
+# Episode 62 — "The LimitRange Trap"
+# Culprit: LimitRange sets a maximum that is lower than the pod's explicit request
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: constrained
+  labels:
+    scenario: episode-62
+---
+# LimitRange that sets a low max memory limit
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: mem-limit-range
+  namespace: constrained
+  labels:
+    scenario: episode-62
+spec:
+  limits:
+  - type: Container
+    default:
+      memory: "128Mi"
+      cpu: "200m"
+    defaultRequest:
+      memory: "64Mi"
+      cpu: "100m"
+    max:
+      memory: "256Mi"   # ← maximum allowed memory limit per container
+      cpu: "500m"
+---
+# Pod that explicitly requests MORE than the LimitRange maximum
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: big-app
+  namespace: constrained
+  labels:
+    scenario: episode-62
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: big-app
+  template:
+    metadata:
+      labels:
+        app: big-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+        resources:
+          requests:
+            memory: "512Mi"   # ← exceeds LimitRange max of 256Mi
+            cpu: "300m"
+          limits:
+            memory: "512Mi"   # ← exceeds LimitRange max of 256Mi
+            cpu: "400m"
+# EXPECTED: Pod creation fails with:
+#   "maximum memory usage per Container is 256Mi, but limit is 512Mi"
+#
+# DIAGNOSE:
+#   kubectl describe limitrange mem-limit-range -n constrained
+#   kubectl get events -n constrained | grep "maximum"
+#   kubectl describe replicaset -n constrained | grep -A5 "Warning"
+#
+# FIX option 1: Reduce pod resource requests to fit within LimitRange:
+#   memory: "200Mi"
+# FIX option 2: Raise the LimitRange maximum (requires admin):
+#   kubectl edit limitrange mem-limit-range -n constrained

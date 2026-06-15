@@ -1,0 +1,56 @@
+# Episode 87 — "The Broken Webhook Server"
+# Culprit: Webhook server cert missing SAN for the Kubernetes service DNS name — TLS handshake fails
+
+---
+# This episode is a TLS/certificate configuration issue.
+# The webhook server has a cert for "localhost" but NOT for
+# "webhook-server.default.svc" — the DNS name used by the API server to call it.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: episode-87-explanation
+  namespace: default
+  labels:
+    scenario: episode-87
+data:
+  problem: |
+    The webhook server generates a TLS certificate with CN=localhost
+    but missing Subject Alternative Names (SANs) for:
+      - webhook-server.default.svc
+      - webhook-server.default.svc.cluster.local
+
+    The Kubernetes API server connects to the webhook using:
+      https://webhook-server.default.svc/validate
+
+    The TLS handshake fails with:
+      "x509: certificate is valid for localhost, not webhook-server.default.svc"
+
+  generate_wrong_cert: |
+    # Wrong: no SAN for the service DNS name
+    openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
+      -days 365 -nodes -subj "/CN=localhost"
+
+  generate_correct_cert: |
+    # Correct: include SANs for all DNS names the API server will use
+    openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
+      -days 365 -nodes \
+      -subj "/CN=webhook-server.default.svc" \
+      -addext "subjectAltName=DNS:webhook-server.default.svc,DNS:webhook-server.default.svc.cluster.local,DNS:localhost"
+
+    # OR use cert-manager Certificate with proper dnsNames:
+    # dnsNames:
+    # - webhook-server
+    # - webhook-server.default
+    # - webhook-server.default.svc
+    # - webhook-server.default.svc.cluster.local
+
+  diagnose: |
+    # Check the webhook server's certificate SANs:
+    kubectl get secret webhook-tls -o jsonpath='{.data.tls\.crt}' | \
+      base64 -d | openssl x509 -noout -text | grep -A3 "Subject Alternative"
+
+    # Or test the TLS handshake:
+    kubectl run -it --rm test --image=alpine -- \
+      wget -O- https://webhook-server.default.svc/validate --no-check-certificate -S 2>&1 | \
+      grep -i "certificate\|ssl\|tls"

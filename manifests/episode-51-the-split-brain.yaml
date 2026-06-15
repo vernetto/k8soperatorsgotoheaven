@@ -1,0 +1,62 @@
+# Episode 51 — "The Split Brain"
+# Culprit: etcd loses quorum after node failure — API server becomes read-only
+# (Control-plane level issue; this manifest illustrates symptoms and diagnosis)
+
+---
+# A pod to observe the "read-only" API server behavior
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-probe
+  namespace: default
+  labels:
+    scenario: episode-51
+spec:
+  serviceAccountName: default
+  containers:
+  - name: probe
+    image: bitnami/kubectl:latest
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "=== Testing API server read vs write ==="
+        while true; do
+          echo "--- READ test (kubectl get pods) ---"
+          kubectl get pods -n default && echo "READ: OK" || echo "READ: FAILED"
+
+          echo "--- WRITE test (kubectl create configmap) ---"
+          kubectl create configmap test-write-$(date +%s) \
+            --from-literal=key=value 2>&1 && echo "WRITE: OK" || echo "WRITE: FAILED"
+
+          sleep 10
+        done
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: episode-51-probe
+  labels:
+    scenario: episode-51
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+# SIMULATE etcd quorum loss in KIND (3-node etcd cluster needed):
+#   # KIND uses single-node etcd by default — stop it to simulate full loss:
+#   docker exec -it kind-control-plane bash
+#   kill $(pgrep etcd)
+#   # Now: reads may still work (from API server cache), writes will fail:
+#   # "etcdserver: request timed out" or "error: the server is currently unable to handle the request"
+#
+# DIAGNOSE:
+#   kubectl get pods -n kube-system | grep etcd
+#   kubectl logs -n kube-system etcd-kind-control-plane | tail -20
+#   # Look for: "failed to send out heartbeat on time", "lost leader"
+#
+# FIX:
+#   # For a 3-node etcd cluster: restore quorum by restarting a failed member
+#   # For complete loss: restore from etcd backup (etcdctl snapshot restore)

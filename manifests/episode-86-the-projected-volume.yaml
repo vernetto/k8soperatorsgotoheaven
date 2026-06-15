@@ -1,0 +1,71 @@
+# Episode 86 — "The Projected Volume"
+# Culprit: Projected ServiceAccount token has short expiry — pods fail to authenticate after expiry
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: short-lived-sa
+  namespace: default
+  labels:
+    scenario: episode-86
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-86
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      serviceAccountName: short-lived-sa
+      volumes:
+      - name: token-volume
+        projected:
+          sources:
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 600   # ← 10 minutes! Very short for demo
+              audience: "https://kubernetes.default.svc"
+      containers:
+      - name: api
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "=== ServiceAccount Token Info ==="
+            TOKEN=$(cat /var/run/secrets/token)
+            echo "Token length: ${#TOKEN}"
+            # Decode the JWT payload (base64)
+            PAYLOAD=$(echo $TOKEN | cut -d'.' -f2 | base64 -d 2>/dev/null || echo "decode failed")
+            echo "Token payload: $PAYLOAD"
+            echo ""
+            echo "The kubelet SHOULD rotate this token before expiry,"
+            echo "but if rotation fails, API calls will fail after 10 minutes."
+            while true; do
+              CURRENT_TOKEN=$(cat /var/run/secrets/token)
+              echo "Token (first 30 chars): ${CURRENT_TOKEN:0:30}..."
+              sleep 60
+            done
+        volumeMounts:
+        - name: token-volume
+          mountPath: /var/run/secrets
+# EXPECTED (normal): kubelet automatically rotates the token before expiry
+#   If rotation fails (e.g. API server unreachable), pods start getting 401 errors
+#
+# DIAGNOSE:
+#   kubectl exec -l app=api -- cat /var/run/secrets/token | \
+#     cut -d'.' -f2 | base64 -d 2>/dev/null | python3 -m json.tool
+#   # Check "exp" field — if in the past, token is expired
+#
+# FIX: Use a longer expirationSeconds (3600 = 1 hour, 86400 = 24h),
+#   and ensure kubelet can reach the API server to renew tokens.

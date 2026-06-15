@@ -1,0 +1,40 @@
+# Episode 44 — "The Starving Job"
+# Culprit: Job pod requests more CPU/memory than any node can provide → Pending forever
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: big-batch-job
+  namespace: default
+  labels:
+    scenario: episode-44
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: processor
+        image: busybox:1.36
+        command: ["/bin/sh", "-c", "echo 'Processing...'; sleep 60; echo 'Done'"]
+        resources:
+          requests:
+            cpu: "32"        # ← requests 32 CPU cores — more than any KIND node has
+            memory: "64Gi"   # ← requests 64Gi RAM — more than any KIND node has
+          limits:
+            cpu: "32"
+            memory: "64Gi"
+# EXPECTED: Job pod stays Pending indefinitely with:
+#   "0/N nodes are available: N Insufficient cpu, N Insufficient memory"
+#
+# DIAGNOSE:
+#   kubectl describe pod <job-pod>   # Events section: Insufficient cpu/memory
+#   kubectl describe nodes | grep -A5 "Allocatable"
+#   # Compare node allocatable vs pod requests
+#
+# FIX option 1: Reduce resource requests to fit available nodes
+# FIX option 2: Split the job into smaller parallel jobs:
+#   spec:
+#     parallelism: 4
+#     completions: 4
+#   (each pod requests 1/4 of the resources)

@@ -1,0 +1,96 @@
+# Episode 89 — "The Invisible Finalizer"
+# Culprit: CRD deletion blocked by existing Custom Resources in other namespaces
+
+---
+# Step 1: Apply the CRD
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: databases.episode89.example.com
+  labels:
+    scenario: episode-89
+spec:
+  group: episode89.example.com
+  names:
+    kind: Database
+    plural: databases
+    singular: database
+    shortNames:
+    - db89
+  scope: Namespaced
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              engine:
+                type: string
+---
+# Step 2: Create Custom Resources in multiple namespaces
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-alpha
+  labels:
+    scenario: episode-89
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-beta
+  labels:
+    scenario: episode-89
+---
+apiVersion: episode89.example.com/v1
+kind: Database
+metadata:
+  name: production-db
+  namespace: team-alpha
+  labels:
+    scenario: episode-89
+spec:
+  engine: postgres
+---
+apiVersion: episode89.example.com/v1
+kind: Database
+metadata:
+  name: analytics-db
+  namespace: team-beta
+  labels:
+    scenario: episode-89
+spec:
+  engine: mysql
+---
+apiVersion: episode89.example.com/v1
+kind: Database
+metadata:
+  name: cache-db
+  namespace: default
+  labels:
+    scenario: episode-89
+spec:
+  engine: redis
+# REPRODUCE:
+#   kubectl apply -f episode-89-the-invisible-finalizer.yaml
+#   # Try to delete the CRD (e.g. migrating to a new CRD version):
+#   kubectl delete crd databases.episode89.example.com
+#   kubectl get crd databases.episode89.example.com   # stuck in Terminating!
+#
+# DIAGNOSE:
+#   kubectl get crd databases.episode89.example.com   # shows Terminating
+#   # CRD has a finalizer: customresourcecleanup.apiextensions.k8s.io
+#   # It waits for ALL instances to be deleted first
+#   kubectl get databases.episode89.example.com -A   # shows CRs in multiple namespaces!
+#
+# FIX: Delete all Custom Resources first, then the CRD deletes cleanly:
+#   kubectl delete databases.episode89.example.com -A --all
+#   # CRD will now complete its deletion
+#
+# THEN clean up the namespaces from this scenario:
+#   kubectl delete namespace team-alpha team-beta

@@ -1,0 +1,64 @@
+# Episode 30 — "The Headless Stalker"
+# Culprit: StatefulSet headless service misconfigured — pods can't discover each other
+
+---
+# Wrong: regular (non-headless) service used as the StatefulSet governing service
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra        # ← same name as serviceName in StatefulSet
+  namespace: default
+  labels:
+    scenario: episode-30
+spec:
+  selector:
+    app: cassandra
+  ports:
+  - port: 9042
+    targetPort: 9042
+  # clusterIP is NOT set to None — this is the bug!
+  # A regular ClusterIP service is created instead of headless
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cassandra
+  namespace: default
+  labels:
+    scenario: episode-30
+spec:
+  serviceName: "cassandra"   # must match the headless service name
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cassandra
+  template:
+    metadata:
+      labels:
+        app: cassandra
+    spec:
+      containers:
+      - name: cassandra
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Trying to discover peers via DNS..."
+            # In a real cluster this would be: nslookup cassandra-0.cassandra
+            nslookup cassandra-0.cassandra || echo "FAILED: Cannot resolve peer DNS"
+            nslookup cassandra-1.cassandra || echo "FAILED: Cannot resolve peer DNS"
+            sleep 3600
+        ports:
+        - containerPort: 9042
+# EXPECTED: DNS lookup for cassandra-0.cassandra fails — no per-pod DNS records
+#   because the service is not headless
+#
+# DIAGNOSE:
+#   kubectl exec cassandra-0 -- nslookup cassandra-0.cassandra
+#   # Returns the ClusterIP, not the pod IP — or fails entirely
+#   kubectl get service cassandra -o jsonpath='{.spec.clusterIP}'
+#   # Should be "None" for headless, but is a real IP
+#
+# FIX: Make the service headless:
+#   spec:
+#     clusterIP: None

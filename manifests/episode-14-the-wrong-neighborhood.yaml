@@ -1,0 +1,53 @@
+# Episode 14 — "The Wrong Neighborhood"
+# Culprit: Missing nodeAffinity — stateful pod scheduled on spot/wrong node type
+
+---
+# Label a node to simulate a "spot" node (run after apply):
+# kubectl label nodes kind-worker node-type=spot
+
+# Stateful workload that SHOULD only run on on-demand nodes
+# but has no nodeAffinity — it will happily land on the spot node
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: default
+  labels:
+    scenario: episode-14
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # Missing nodeAffinity for node-type: on-demand
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "password"
+        resources:
+          requests:
+            memory: "256Mi"
+# EXPECTED: Pod schedules wherever Kubernetes pleases — including the spot node
+# If that node is terminated by the cloud provider, the DB goes down.
+#
+# DIAGNOSE:
+#   kubectl get pod postgres-0 -o wide    # check which node it's on
+#   kubectl get nodes --show-labels | grep node-type
+#
+# FIX: Add nodeAffinity to require on-demand nodes:
+#   affinity:
+#     nodeAffinity:
+#       requiredDuringSchedulingIgnoredDuringExecution:
+#         nodeSelectorTerms:
+#         - matchExpressions:
+#           - key: node-type
+#             operator: In
+#             values: ["on-demand"]

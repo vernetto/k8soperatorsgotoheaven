@@ -1,0 +1,61 @@
+# Episode 23 — "The Pod That Ate the World"
+# Culprit: One pod consuming all node CPU with no limits — throttling everything else
+
+---
+# The noisy neighbour — no CPU limit!
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cpu-hog
+  namespace: default
+  labels:
+    scenario: episode-23
+    role: hog
+spec:
+  containers:
+  - name: hog
+    image: polinux/stress:latest
+    command: ["stress"]
+    args: ["--cpu", "4", "--timeout", "300s"]
+    resources:
+      requests:
+        cpu: "100m"   # ← low request, gets scheduled easily
+      # NO CPU LIMIT — will consume all available CPU
+---
+# Victim workload — impacted by CPU starvation
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: innocent-service
+  namespace: default
+  labels:
+    scenario: episode-23
+    role: victim
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: innocent-service
+  template:
+    metadata:
+      labels:
+        app: innocent-service
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+        resources:
+          requests:
+            cpu: "100m"
+          limits:
+            cpu: "200m"
+# EXPECTED: cpu-hog consumes all available CPU; innocent-service pods get throttled
+# DIAGNOSE:
+#   kubectl top pods --sort-by=cpu   # if metrics-server installed
+#   kubectl describe node | grep -A10 "Allocated resources"
+#
+# FIX: Set CPU limits on the cpu-hog pod:
+#   resources:
+#     limits:
+#       cpu: "500m"
+#   And/or add CPU limits to all pods (or use LimitRange as a safety net)

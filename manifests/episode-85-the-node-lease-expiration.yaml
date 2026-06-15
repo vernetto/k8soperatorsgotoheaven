@@ -1,0 +1,78 @@
+# Episode 85 — "The Node Lease Expiration"
+# Culprit: Node heartbeat delayed — controller-manager declares node NotReady, evicts pods from live node
+
+---
+# A DaemonSet to monitor node lease health across all nodes
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: lease-monitor
+  namespace: default
+  labels:
+    scenario: episode-85
+spec:
+  selector:
+    matchLabels:
+      app: lease-monitor
+  template:
+    metadata:
+      labels:
+        app: lease-monitor
+    spec:
+      serviceAccountName: default
+      containers:
+      - name: monitor
+        image: bitnami/kubectl:latest
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            NODE=$(kubectl get pod $POD_NAME -o jsonpath='{.spec.nodeName}' 2>/dev/null || hostname)
+            echo "Monitoring node lease for: $NODE"
+            while true; do
+              echo "=== $(date) ==="
+              # Check node lease in kube-node-lease namespace
+              kubectl get lease -n kube-node-lease $NODE \
+                -o jsonpath='renewTime: {.spec.renewTime}{"\n"}' 2>/dev/null || echo "Lease not found!"
+              kubectl get node $NODE \
+                -o jsonpath='Conditions: {range .status.conditions[?(@.type=="Ready")]}{.status} ({.reason}){"\n"}{end}' 2>/dev/null
+              sleep 10
+            done
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: episode-85-lease-monitor
+  labels:
+    scenario: episode-85
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+# SIMULATE node lease expiration in KIND:
+#   # Stop the kubelet on a worker node:
+#   docker exec kind-worker systemctl stop kubelet
+#   # Wait ~40 seconds (default node-monitor-grace-period):
+#   # Node transitions: Ready → NotReady → pods get evicted
+#   kubectl get nodes -w   # watch the node go NotReady
+#   kubectl get pods -w    # watch pod evictions begin
+#
+#   # Restart:
+#   docker exec kind-worker systemctl start kubelet
+#
+# DIAGNOSE:
+#   kubectl get lease -n kube-node-lease   # shows stale renewTime
+#   kubectl describe node <name> | grep -A3 "Conditions"
+#   kubectl get events | grep "NodeNotReady\|Evicted"
+#
+# FIX: Investigate what caused the kubelet to miss heartbeats:
+#   journalctl -u kubelet -n 100   (on the affected node)
+#   Check for: OOM kills, disk full, network partition, CPU starvation

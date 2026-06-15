@@ -1,0 +1,35 @@
+# Episode 13 — "The Tainted Ground"
+# Culprit: Node taint with no matching pod toleration → pod stays Pending
+
+---
+# First, taint a node (run this command after applying the manifest):
+# kubectl taint nodes <node-name> dedicated=gpu:NoSchedule
+#
+# In KIND you can taint the worker node:
+# kubectl taint nodes kind-worker dedicated=gpu:NoSchedule
+
+# Pod WITHOUT toleration — will not schedule on tainted node
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-workload
+  namespace: default
+  labels:
+    scenario: episode-13
+spec:
+  containers:
+  - name: workload
+    image: nginx:stable
+  # No tolerations — blocked by the taint
+  nodeSelector: {}
+# EXPECTED: Pod stays Pending with "0/N nodes are available: N node(s) had untolerated taint"
+# DIAGNOSE:
+#   kubectl describe pod gpu-workload   # look at Events section
+#   kubectl describe node <node> | grep Taints
+#
+# FIX: Add toleration to the pod spec:
+#   tolerations:
+#   - key: "dedicated"
+#     operator: "Equal"
+#     value: "gpu"
+#     effect: "NoSchedule"

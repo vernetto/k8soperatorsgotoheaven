@@ -1,0 +1,76 @@
+# Episode 55 — "The Invisible Egress"
+# Culprit: NetworkPolicy egress rule missing — pod can't make outbound connections
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: restricted
+  labels:
+    scenario: episode-55
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: restricted
+  labels:
+    scenario: episode-55
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: curlimages/curl:8.5.0
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Testing egress connectivity..."
+            echo "=== DNS (port 53) ==="
+            nslookup kubernetes.default.svc.cluster.local || echo "DNS FAILED"
+            echo "=== Internal service ==="
+            curl -s --max-time 5 http://kubernetes.default.svc.cluster.local || echo "Internal FAILED"
+            echo "=== External ==="
+            curl -s --max-time 5 http://example.com || echo "External FAILED"
+            sleep 3600
+---
+# NetworkPolicy: allows ingress but NO egress rules → all outbound blocked
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-netpol
+  namespace: restricted
+  labels:
+    scenario: episode-55
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+  - Ingress
+  - Egress   # ← Egress is listed but has NO rules → deny all egress
+  ingress:
+  - {}       # allow all ingress
+  egress: [] # ← empty = deny all egress (including DNS!)
+# EXPECTED: All curl and nslookup commands fail — DNS on port 53 also blocked
+#
+# DIAGNOSE:
+#   kubectl logs -n restricted -l app=api   # shows DNS FAILED, FAILED, FAILED
+#   kubectl describe networkpolicy api-netpol -n restricted
+#
+# FIX: Add egress rules for DNS and required destinations:
+#   egress:
+#   - ports:             # allow DNS
+#     - port: 53
+#       protocol: UDP
+#     - port: 53
+#       protocol: TCP
+#   - to:               # allow access to kubernetes API
+#     - namespaceSelector: {}

@@ -1,0 +1,87 @@
+# Episode 57 — "The Poisoned Well"
+# Culprit: NodeLocal DNSCache returning stale records — service unreachable by name
+
+---
+# A client pod that queries DNS and shows stale/inconsistent results
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dns-probe
+  namespace: default
+  labels:
+    scenario: episode-57
+spec:
+  containers:
+  - name: probe
+    image: busybox:1.36
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        echo "=== DNS investigation tool ==="
+        echo "Resolving 'my-service' repeatedly to spot inconsistencies..."
+        while true; do
+          echo "--- $(date) ---"
+          nslookup my-service.default.svc.cluster.local 2>&1 | grep -E "Address|Name|error"
+          nslookup my-service 2>&1 | grep -E "Address|Name|error"
+          sleep 5
+        done
+---
+# Service that will be deleted/recreated to trigger stale cache
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+  namespace: default
+  labels:
+    scenario: episode-57
+spec:
+  selector:
+    app: my-app
+  ports:
+  - port: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: default
+  labels:
+    scenario: episode-57
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:stable
+# REPRODUCE STALE DNS:
+#   # Delete and recreate the service (simulating a new ClusterIP):
+#   kubectl delete service my-service
+#   kubectl apply -f - <<SVC
+#   apiVersion: v1
+#   kind: Service
+#   metadata:
+#     name: my-service
+#     namespace: default
+#   spec:
+#     selector:
+#       app: my-app
+#     ports:
+#     - port: 80
+#   SVC
+#   # Observe that dns-probe pod may still return the OLD ClusterIP for a while
+#
+# DIAGNOSE:
+#   kubectl exec dns-probe -- nslookup my-service   # check returned IP
+#   kubectl get service my-service                   # compare with current ClusterIP
+#
+# FIX (NodeLocal DNSCache stale entry):
+#   # Restart the NodeLocal DNS pod on the affected node:
+#   kubectl delete pod -n kube-system -l k8s-app=node-local-dns \
+#     --field-selector=spec.nodeName=<affected-node>

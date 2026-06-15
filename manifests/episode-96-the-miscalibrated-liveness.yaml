@@ -1,0 +1,78 @@
+# Episode 96 — "The Miscalibrated Liveness"
+# Culprit: Liveness probe timeout too short — slow responses under load trigger false kills
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+  labels:
+    scenario: episode-96
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            mkdir -p /tmp
+            echo "API started. Responding to health checks..."
+            while true do
+              # Simulate: under load, health check takes 2-3 seconds
+              LOAD_FACTOR=$((RANDOM % 3))
+              sleep $LOAD_FACTOR
+              echo "ok" > /tmp/healthy
+              sleep 0.5
+            done
+        livenessProbe:
+          exec:
+            command: ["cat", "/tmp/healthy"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 1       # ← THE BUG: 1 second timeout
+          failureThreshold: 2    # ← only 2 failures before pod is killed
+          # Under load: app takes 2-3s to respond → probe times out → pod killed
+          # This creates a self-defeating cycle: load → kill → restart → more load
+        readinessProbe:
+          exec:
+            command: ["cat", "/tmp/healthy"]
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+# REPRODUCE:
+#   kubectl apply -f episode-96-the-miscalibrated-liveness.yaml
+#   # Simulate load that makes the health endpoint slow:
+#   kubectl exec -l app=api -- /bin/sh -c "while true; do sleep 2 & done"
+#   # Watch for liveness probe failures and pod restarts:
+#   kubectl get pods -l app=api -w
+#   kubectl describe pod -l app=api | grep -A5 "Liveness"
+#
+# DIAGNOSE:
+#   kubectl describe pod <name> | grep "Liveness probe failed"
+#   kubectl get pod <name> -o jsonpath='{.status.containerStatuses[0].restartCount}'
+#   # High restart count = liveness probe killing healthy pod under load
+#
+# FIX: Increase timeoutSeconds and failureThreshold:
+#   livenessProbe:
+#     timeoutSeconds: 5          # allow 5s for slow responses
+#     failureThreshold: 3        # tolerate 3 failures before killing
+#     periodSeconds: 15          # check less frequently
